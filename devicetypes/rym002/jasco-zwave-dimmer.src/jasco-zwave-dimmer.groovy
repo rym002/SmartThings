@@ -620,15 +620,12 @@ private processAssociations(){
                             return zwave.associationV2.associationRemove(groupingIdentifier:groupId, nodeId:Integer.parseInt(it,16))
                         }
                     }
-                    
-//            		state.remove("desiredAssociation${groupId}")
-                    
+                                        
                     if (nodeCmds) {
                         nodeCmds +=  zwave.associationV2.associationGet(groupingIdentifier:groupId)
                     } else {
                         log.info "There are no association actions to complete for group ${groupId}"
                     }
-                    log.debug "nodeCmds ${nodeCmds}"
                 	return nodeCmds
                 }
            } else {
