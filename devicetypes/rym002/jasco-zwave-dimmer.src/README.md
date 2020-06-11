@@ -2,14 +2,12 @@
  
 ## Creates a child button for the scene event
 
-### Supports Z-Wave Association Tool
-See: https://community.inovelli.com/t/how-to-using-the-z-wave-association-tool-in-smartthings/1944 for info
+### Supports:
+* [Z-Wave Association Tool](https://community.inovelli.com/t/how-to-using-the-z-wave-association-tool-in-smartthings/1944)
+* [Honeywell 39351/ZW3010 Z-Wave Capabilities](https://www.cd-jackson.com/index.php/zwave/zwave-device-database/zwave-device-list/devicesummary/1213)
 
 ### Creates child device for actions with button scenes. 
 **Note:** Button release action is presented as 6x because there is no release member for supportedButtonValues
 
 **TODO:**
 * Find vid that supports button and switch to remove child device
-
-### Works with:
-* Honeywell 39351/ZW3010
