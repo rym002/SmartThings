@@ -11,4 +11,4 @@
 * Find vid that supports button and switch to remove child device
 
 **Additional**
-* Will need to replace namespace in createChildButton with your own.
+* Will need to replace namespace in ```createChildButton``` with your own.
