@@ -137,7 +137,7 @@ metadata {
             name: "dimmingDuration",
             type: "number",
             title: "Dimming Duration",
-            defaultValue: 0,
+            defaultValue: "0",
             range: "0..255",
             required: false
         )
@@ -145,7 +145,7 @@ metadata {
             name: "commandDelay",
             type: "number",
             title: "Command Delay Duration",
-            defaultValue: 0,
+            defaultValue: "0",
             range: "0..1000",
             required: false
         )
@@ -153,10 +153,10 @@ metadata {
             name: "sceneHandler",
             type: "enum",
             title: "Scene Handler Device",
-            defaultValue: 0,
+            defaultValue: "0",
             options: [
-                0 : "Enable",
-                1 : "Disable"
+                "0" : "Enable",
+                "1" : "Disable"
             ],
             required: false
         )
@@ -171,7 +171,7 @@ metadata {
             type: "bool",
             title: "Sync Setting",
             description: "Force update all settings value from the device.",
-            defaultValue: false,
+            defaultValue: "false",
             required: false
         )
         input(
@@ -179,7 +179,7 @@ metadata {
             type: "bool",
             title: "Sync Associations",
             description: "Force update all z wave associations from the device.",
-            defaultValue: false,
+            defaultValue: "false",
             required: false
         )
     }
@@ -198,14 +198,14 @@ private initialize(){
         zwave.firmwareUpdateMdV2.firmwareMdGet(),
         zwave.manufacturerSpecificV2.manufacturerSpecificGet(),
         zwave.centralSceneV1.centralSceneSupportedGet(),
-        zwave.powerlevelV1.powerlevelGet(),
-    ]  + processAssociations()
+        zwave.powerlevelV1.powerlevelGet()
+    ]  + processAssociations() + allConfigGetCommands
     allCommands
 }
 def installed() {
     log.debug "installed"
     createChildButton()
-    refresh()
+    response(refresh())
 }
 
 def uninstalled(){
@@ -268,7 +268,7 @@ def setLevel(level, rate) {
 
 def refresh() {
     log.debug "refresh"
-    commands zwave.switchMultilevelV3.switchMultilevelGet(), commandDelay
+    commands([zwave.switchMultilevelV3.switchMultilevelGet()], commandDelay)
 }
 
 def setAssociationGroup(group, nodes, action, endpoint = null){
@@ -328,7 +328,7 @@ private zwaveEvent(physicalgraph.zwave.commands.securityv1.SecurityMessageEncaps
 
 private zwaveEvent(physicalgraph.zwave.commands.configurationv2.ConfigurationReport cmd) {
     def preference = parameterMap.find( {it.parameterNumber == cmd.parameterNumber} )
-    updatePreferenceValue preference, cmd.scaledConfigurationValue
+    updatePreferenceValue preference, cmd.configurationValue[cmd.size-1]
 }
 
 private zwaveEvent(physicalgraph.zwave.commands.applicationstatusv1.ApplicationBusy cmd) {
@@ -403,56 +403,55 @@ private zwaveEvent(physicalgraph.zwave.Command cmd) {
 private getParameterMap(){[
     [
         name: "switchMode", type: "enum", title:"Switch Mode",
-        parameterNumber: 16, size: 1, defaultValue: 0,
+        parameterNumber: 16, size: 1, defaultValue: "0",
         description: "Enable/Disable Switch Mode",
         options:[
-            0:"Dimmer",
-            1:"Switch"
+            "0":"Dimmer",
+            "1":"Switch"
         ]
     ],
     [
         name: "alternateExclusion", type: "enum", title:"Alternate Exclusion",
-        parameterNumber: 19, size: 1, defaultValue: 0,
+        parameterNumber: 19, size: 1, defaultValue: "0",
         description: "Normal:Press any button on the switch. \nAlternate: Press two times ON button and two times OFF button, LED will flash 5 times if exclusion succeed",
         options:[
-            0: "Normal",
-            1: "Alternate"
+            "0": "Normal",
+            "1": "Alternate"
         ]
     ],
     [
         name: "ledIndication", type: "enum", title:"LED indication configuration",
+        parameterNumber: 3, size: 1, defaultValue: "0",
+        description: "Controls the LED behavior",
         options:[
-            0: "Device Off",
-            1: "Device On",
-            2: "Always Off",
-            3: "Always On"
-        ],
-        parameterNumber: 3, size: 1, defaultValue: 0,
-        description: "Controls the LED behavior"
+            "0": "Device Off",
+            "1": "Device On",
+            "2": "Always Off",
+            "3": "Always On"
+        ]
     ],
     [
         name: "minDimThreashold", type: "number", title:"Minimum Dim Threshold", range:"1..99",
-        parameterNumber: 30, size: 1, defaultValue: 1,
+        parameterNumber: 30, size: 1, defaultValue: "1",
         description: "Set the minimum dimmer threshold when manually or remotely controlled"
     ],
     [
         name: "maxBrightnessThreashold", type: "number", title:"Maximum Brightness Threshold", range:"1..99",
-        parameterNumber: 31, size: 1, defaultValue: 99,
+        parameterNumber: 31, size: 1, defaultValue: "99",
         description: "Set the maximum brightness threshold when manually or remotely controlled"
     ],
     [
         name: "defaultBrightnessLevel", type: "number", title:"Default Brightness Level", range:"0..99",
-        parameterNumber: 32, size: 1, defaultValue: 0,
-        description: "Set the default brightness level that the dimmer will turn on when being turned on manually. 0 to Disable",
-        disableValue: 0
+        parameterNumber: 32, size: 1, defaultValue: "0",
+        description: "Set the default brightness level that the dimmer will turn on when being turned on manually. 0 to Disable"
     ],
     [
         name: "dimRate", type: "enum", title:"Dim Up/Down Rate",
-        parameterNumber: 6, size: 1, defaultValue: 0,
+        parameterNumber: 6, size: 1, defaultValue: "0",
         description: "Dim up/down the light to the specified level by command except value O and FF",
         options:[
-            0: "Quickly",
-            1: "Slowly"
+            "0": "Quickly",
+            "1": "Slowly"
         ]
     ]
 ]}
@@ -463,18 +462,31 @@ private updatePreferences(){
         def settingValue = settings."$name"
         def deviceValue = state."$name"
         def deviceScaledValue = deviceValue
-        if (settingValue != null){
+		def defaultValue = Short.parseShort(it.defaultValue)
+        
+		if (deviceValue==null){
+            deviceValue = it.defaultValue
+            deviceScaledValue = Short.parseShort(deviceValue)
+        }else{
             if (it.type=="enum"){
-                settingValue = Integer.parseInt(settingValue)
+            	settingValue = settingValue !=null ? Short.parseShort(settingValue) : null
                 it.options.each { key,value ->
                     if (value==deviceValue){
-                        deviceScaledValue = key
+                        deviceScaledValue = Short.parseShort(key)
                     }
                 }
             }else {
-                deviceScaledValue = Integer.parseInt(deviceValue)
+                deviceScaledValue = Short.parseShort(deviceValue)
             }
         }
+
+		if (settingValue == null){
+        	if (deviceScaledValue != defaultValue) {
+            	settingValue = defaultValue
+            }else{
+                device.updateSetting name, deviceScaledValue
+            }
+        }        
         
         if (settings.syncSettings){
             if (it.defaultValue==deviceScaledValue){
@@ -499,12 +511,12 @@ private updatePreferences(){
 
 }
 private updatePreferenceValue(preference, value = "default") {
-    def integerValue = value == "default" ? preference.defaultValue : value.intValue()
+    def strValue = value == "default" ? preference.defaultValue : "${value}"
     def dataValue
     if (preference.type =='enum'){
-        dataValue = preference.options[integerValue]
+        dataValue = preference.options[strValue]
     } else {
-        dataValue = "${integerValue}"
+        dataValue = strValue
     }
     updateDataValue(preference.name, dataValue)
 }
@@ -528,7 +540,7 @@ private commands(commands, delay = 200) {
 }
 
 private changeSwitchLevel(value, dimmingDuration = 0){
-    commands([
+	commands([
         zwave.switchMultilevelV3.switchMultilevelSet(value: value, dimmingDuration: dimmingDuration),
         zwave.switchMultilevelV3.switchMultilevelGet()
     ], commandDelay)
@@ -599,7 +611,7 @@ private processAssociations(){
    def cmds = []
    def groups = device.currentValue("groups")
    if (groups){
-           def da = defaultAssociations
+        def da = defaultAssociations
         cmds = (1..groups).collect{ groupId->
             def associationGroup = state."associationGroup${groupId}"
                def currentNodes = associationGroup ? new groovy.json.JsonSlurper().parseText(associationGroup): null
