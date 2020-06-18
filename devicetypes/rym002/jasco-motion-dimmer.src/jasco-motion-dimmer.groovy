@@ -15,10 +15,10 @@
  
 import groovy.json.JsonOutput
 metadata {
-	definition (name: "Jasco Motion Switch", namespace: "rym002", author: "Ray Munian", cstHandler: true, 
-    			ocfDeviceType: "oic.d.light", mnmn: "SmartThings", vid:"generic-doorbell-2") {
-		capability "Motion Sensor"
+	definition (name: "Jasco Motion Dimmer", namespace: "rym002", author: "Ray Munian", cstHandler: true, 
+    			ocfDeviceType: "oic.d.light", mnmn: "SmartThings", vid:"generic-dimmer") {
 		capability "Switch"
+		capability "Switch Level"
         capability "Configuration"
         capability "Health Check"
 
@@ -26,7 +26,7 @@ metadata {
         
         command "setAssociationGroup", ["number", "enum", "number", "number"] // group number, nodes, action (0 - remove, 1 - add), multi-channel endpoint (optional)
         
-		fingerprint mfr: "0063", prod: "494D", model: "3032", deviceJoinName: "GE Smart Motion Switch"
+		fingerprint mfr: "0063", prod: "494D", model: "3034", deviceJoinName: "GE Smart Motion Dimmer"
 	}
 
 
@@ -141,18 +141,20 @@ private initialize(){
         zwave.versionV1.versionGet(),
         zwave.firmwareUpdateMdV2.firmwareMdGet(),
         zwave.manufacturerSpecificV2.manufacturerSpecificGet(),
-        zwave.powerlevelV1.powerlevelGet(),
+        zwave.centralSceneV1.centralSceneSupportedGet()
     ]  + processAssociations() + allConfigGetCommands
     allCommands
 }
 
 def installed() {
     log.debug "installed"
+    createChildSensor()
     return response(refresh())
 }
 
 def updated() {
     log.debug "updated"
+    createChildSensor()
     def allCommands = updatePreferences()
     if (syncSettings){
         device.updateSetting "syncSettings", null
@@ -168,7 +170,7 @@ def updated() {
 def refresh() {
     log.debug "refresh"
     return commands([
-    	zwave.switchBinaryV1.switchBinaryGet(),
+    	zwave.switchMultilevelV3.switchMultilevelGet(),
         zwave.notificationV3.notificationGet(notificationType:0x07)] , commandDelay)
 }
 
@@ -190,11 +192,22 @@ def parse(description) {
 }
 // handle commands
 def on() {
-	toggleSwitch 0xFF
+    changeSwitchLevel 0xFF, dimmingDuration
 }
 
 def off() {
-	toggleSwitch 0x00
+    changeSwitchLevel 0x00, dimmingDuration
+}
+
+def setLevel(level) {
+    setLevel level, rawDimmingDuration
+}
+
+def setLevel(level, rate) {
+    def intValue = level as Integer
+    def newLevel = Math.max(Math.min(intValue, 99), 0)
+    def levelRate = dimmingDurationValue(rate)
+    changeSwitchLevel newLevel, levelRate
 }
 
 def setAssociationGroup(group, nodes, action, endpoint = null){
@@ -215,20 +228,28 @@ def setAssociationGroup(group, nodes, action, endpoint = null){
 }
 
 private zwaveEvent(physicalgraph.zwave.commands.basicv1.BasicReport cmd) {
-    switchEvent cmd
+    dimmerEvents cmd
 }
-
-private zwaveEvent(physicalgraph.zwave.commands.switchbinaryv1.SwitchBinaryReport cmd) {
-    switchEvent cmd
+private zwaveEvent(physicalgraph.zwave.commands.basicv1.BasicSet cmd) {
+    dimmerEvents cmd
+}
+private zwaveEvent(physicalgraph.zwave.commands.switchmultilevelv3.SwitchMultilevelSet cmd) {
+    dimmerEvents cmd
+}
+private zwaveEvent(physicalgraph.zwave.commands.switchmultilevelv3.SwitchMultilevelReport cmd) {
+    dimmerEvents cmd
 }
 
 private zwaveEvent(physicalgraph.zwave.commands.notificationv3.NotificationReport cmd) {
 	if (cmd.notificationType == 0x07) {
-		if (cmd.event == 0x08) {				// detected
-			createEvent(name: "motion", value: "active", descriptionText: "$device.displayName detected motion")
-		} else if (cmd.event == 0x00) {			// inactive
-			createEvent(name: "motion", value: "inactive", descriptionText: "$device.displayName motion has stopped")
-		}
+        if (childDevices){
+            def childDevice = childDevices[0]
+            if (cmd.event == 0x08) {				// detected
+                childDevice.sendEvent(name: "motion", value: "active", descriptionText: "$device.displayName detected motion")
+            } else if (cmd.event == 0x00) {			// inactive
+                childDevice.sendEvent(name: "motion", value: "inactive", descriptionText: "$device.displayName motion has stopped")
+            }
+        }
 	}
 }
 
@@ -249,6 +270,24 @@ private zwaveEvent(physicalgraph.zwave.commands.associationv2.AssociationGroupin
     response(commands(processAssociations(),commandDelay))
 }
 
+private zwaveEvent(physicalgraph.zwave.commands.centralscenev1.CentralSceneNotification cmd) {
+    // keyAttributes: 0= click 1 = release 2 = hold  3 = double click, 4 = triple click
+    // sceneNumber: 1=up 2=down
+    log.debug "CentralSceneNotification ${cmd.keyAttributes} : ${cmd.sceneNumber} : ${cmd.sequenceNumber}"
+    def modified = cmd.sceneNumber == 2 ? sceneButtonNames.size/2 : 0
+    def eventIndex = cmd.keyAttributes + modified
+
+    def buttonEvent = sceneButtonNames[eventIndex.intValue()]
+
+    if (buttonEvent && childDevices){
+        childDevices[0].sendEvent(name: "button", value: buttonEvent)
+    }
+}
+
+private zwaveEvent(physicalgraph.zwave.commands.centralscenev1.CentralSceneSupportedReport cmd) {
+    updateDataValue("supportedScenes", "${cmd.supportedScenes}")
+}
+
 private zwaveEvent(physicalgraph.zwave.commands.configurationv2.ConfigurationReport cmd) {
     def preference = parameterMap.find( {it.parameterNumber == cmd.parameterNumber} )
     updatePreferenceValue preference, cmd.configurationValue[cmd.size-1]
@@ -265,11 +304,42 @@ private zwaveEvent(physicalgraph.zwave.commands.manufacturerspecificv2.Manufactu
     updateDataValue("MSR", msr)
     updateDataValue("manufacturer", cmd.manufacturerName)
 }
-private toggleSwitch(value){
-    commands([
-        zwave.switchBinaryV1.switchBinarySet(switchValue: value),
-        zwave.switchBinaryV1.switchBinaryGet()
+
+private createChildSensor(){
+    def name = "${device.displayName} Sensor"
+    def id = "${device.deviceNetworkId}:1"
+    if (!childDevices && (sceneHandler == null || sceneHandler=="0")){
+        def childButton = addChildDevice("rym002", "Child Motion Sensor", id , device.hubId,
+                    [completedSetup: true, label: name, isComponent: false])
+    }else if (childDevices && sceneHandler){
+        deleteChildDevice(id)
+    }
+}
+
+private changeSwitchLevel(value, dimmingDuration = 0){
+	commands([
+        zwave.switchMultilevelV3.switchMultilevelSet(value: value, dimmingDuration: dimmingDuration),
+        zwave.switchMultilevelV3.switchMultilevelGet()
     ], commandDelay)
+}
+
+private dimmerEvents(physicalgraph.zwave.Command cmd) {
+    def value = (cmd.value ? "on" : "off")
+    def result = [createEvent(name: "switch", value: value)]
+    if (cmd.value && cmd.value <= 100) {
+        result << createEvent(name: "level", value: cmd.value == 99 ? 100 : cmd.value)
+    }
+    return result
+}
+
+private getRawDimmingDuration(){
+    settings.dimmingDuration ? settings.dimmingDuration : 0
+}
+private dimmingDurationValue(rate){
+    rate < 128 ? rate : 128 + Math.round(rate / 60)
+}
+private getDimmingDuration(){
+    dimmingDurationValue(rawDimmingDuration)
 }
 
 private getCommandDelay(){
@@ -278,7 +348,7 @@ private getCommandDelay(){
 
 private getAllConfigGetCommands(){
     parameterMap.collect {
-        zwave.configurationV1.configurationGet(parameterNumber: it.parameterNumber)
+        zwave.configurationV2.configurationGet(parameterNumber: it.parameterNumber)
     }
 }
 
@@ -324,7 +394,7 @@ private processAssociations(){
    def cmds = []
    def groups = device.currentValue("groups")
    if (groups){
-       	def da = defaultAssociations
+           def da = defaultAssociations
         cmds = (1..groups).collect{ groupId->
             def associationGroup = state."associationGroup${groupId}"
                def currentNodes = associationGroup ? new groovy.json.JsonSlurper().parseText(associationGroup): null
@@ -447,14 +517,16 @@ private getParameterMap(){[
         ]
     ],
     [
-        name: "brightness", type: "number", title:"Change brightness of associated light bulb(s)", range:"0..99",
+        name: "dimLevel", type: "number", title:"Dim Level", range:"0..99",
         parameterNumber: 2, size: 1, defaultValue: "255",
-        description: "brightness of associated light bulb(s)",
+        description: "Brightness of associated light(s) Valid values are 0-99 or 255 for last dimming level Values in the range 0 to 255 may be set.",
     ],
     [
         name: "operationMode", type: "enum", title:"Operation Mode",
         parameterNumber: 3, size: 1, defaultValue: "3",
-        description: "Operation mode of the motion sensor",
+        description: "Sets how the light responds to motion Occupancy – Light turns on automatically with motion and off automatically without motion. "
+        + "Vacancy – Light turns on manually and off automatically without motion. "
+        + "Manual – Light only turns on and off manually The following option values may be configured",
         options:[
             "1": "Manual",
             "2": "Vacancy",
@@ -489,6 +561,42 @@ private getParameterMap(){[
         ]
     ],
     [
+        name: "remoteDimStep", type: "number", title:"Remote Control Dim Step", range:"1..99",
+        parameterNumber: 7, size: 1, defaultValue: "1",
+        description: "Sets the step size of the dimmer.",
+    ],
+    [
+        name: "remoteDimRate", type: "number", title:"Remote Control Dim Rate", range:"1..255",
+        parameterNumber: 8, size: 1, defaultValue: "3",
+        description: "Set the speed at which the dim level will change. (10 millisecond precision) When set to 1, "
+        + "the dim level will change every 10ms, when set to 255 the dim level will change every 2.55 seconds. "
+        + "The default value is 3 / 30 ms. Values in the range 1 to 255 may be set.",
+    ],
+    [
+        name: "localDimStep", type: "number", title:"Local Control Dim Step", range:"1..99",
+        parameterNumber: 9, size: 1, defaultValue: "1",
+        description: "Sets the step size of the dimmer.",
+    ],
+    [
+        name: "localDimRate", type: "number", title:"Local Control Dim Rate", range:"1..255",
+        parameterNumber: 10, size: 1, defaultValue: "3",
+        description: "Set the speed at which the dim level will change. (10 millisecond precision) When set to 1, "
+        + "the dim level will change every 10ms, when set to 255 the dim level will change every 2.55 seconds. "
+        + "The default value is 3 / 30 ms. Values in the range 1 to 255 may be set.",
+    ],
+    [
+        name: "allDimStep", type: "number", title:"ALL ON/ALL OFF Dim Step", range:"1..99",
+        parameterNumber: 11, size: 1, defaultValue: "1",
+        description: "Sets the step size of the dimmer.",
+    ],
+    [
+        name: "allDimRate", type: "number", title:"ALL ON/ALL OFF Dim Rate", range:"1..255",
+        parameterNumber: 12, size: 1, defaultValue: "3",
+        description: "Set the speed at which the dim level will change. (10 millisecond precision) When set to 1, "
+        + "the dim level will change every 10ms, when set to 255 the dim level will change every 2.55 seconds. "
+        + "The default value is 3 / 30 ms. Values in the range 1 to 255 may be set.",
+    ],
+    [
         name: "motionSensorSensitivity", type: "enum", title:"Motion Sensor Sensitivity",
         parameterNumber: 13, size: 1, defaultValue: "2",
         description: "Motion Sensor Sensitivity",
@@ -500,7 +608,7 @@ private getParameterMap(){[
     ],
     [
         name: "lightSensing", type: "enum", title:"Enable/Disable Light Sensing",
-        parameterNumber: 14, size: 1, defaultValue: "1",
+        parameterNumber: 14, size: 1, defaultValue: "0",
         description: "Enable/Disable Light Sensing",
         options:[
             "0":"Disabled",
@@ -518,6 +626,29 @@ private getParameterMap(){[
             "3":"30 secs",
             "4":"45 secs",
             "110":"27 mins"
+        ]
+    ],
+    [
+        name: "switchMode", type: "enum", title:"Switch Mode",
+        parameterNumber: 16, size: 1, defaultValue: "0",
+        description: "Enable/Disable Switch Mode",
+        options:[
+            "0":"Dimmer",
+            "1":"Switch"
+        ]
+    ],
+    [
+        name: "switchLevel", type: "number", title:"Switch Level", range:"0..99",
+        parameterNumber: 17, size: 1, defaultValue: "0",
+        description: "Set power level for plain switch functionality",
+    ],
+    [
+        name: "dimUpRate", type: "enum", title:"Dim Up Rate",
+        parameterNumber: 18, size: 1, defaultValue: "0",
+        description: "Dim up/down the light to the specified level by command except value O and FF",
+        options:[
+            "0": "Quickly",
+            "1": "Slowly"
         ]
     ],
     [

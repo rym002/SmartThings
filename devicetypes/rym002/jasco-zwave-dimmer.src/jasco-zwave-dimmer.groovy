@@ -197,8 +197,7 @@ private initialize(){
         zwave.versionV1.versionGet(),
         zwave.firmwareUpdateMdV2.firmwareMdGet(),
         zwave.manufacturerSpecificV2.manufacturerSpecificGet(),
-        zwave.centralSceneV1.centralSceneSupportedGet(),
-        zwave.powerlevelV1.powerlevelGet()
+        zwave.centralSceneV1.centralSceneSupportedGet()
     ]  + processAssociations() + allConfigGetCommands
     allCommands
 }
@@ -379,8 +378,8 @@ private zwaveEvent(physicalgraph.zwave.commands.centralscenev1.CentralSceneSuppo
 }
 
 private zwaveEvent(physicalgraph.zwave.commands.associationv2.AssociationGroupingsReport cmd) {
-    def event = createEvent(name: "groups", value: cmd.supportedGroupings)
-    [event]
+    sendEvent(name: "groups", value: cmd.supportedGroupings)
+    response(commands(processAssociations(),commandDelay))
 }
 
 private zwaveEvent(physicalgraph.zwave.commands.associationv2.AssociationReport cmd) {
@@ -402,6 +401,26 @@ private zwaveEvent(physicalgraph.zwave.Command cmd) {
 
 private getParameterMap(){[
     [
+        name: "ledIndication", type: "enum", title:"LED indication configuration",
+        parameterNumber: 3, size: 1, defaultValue: "0",
+        description: "Controls the LED behavior",
+        options:[
+            "0": "Device Off",
+            "1": "Device On",
+            "2": "Always Off",
+            "3": "Always On"
+        ]
+    ],
+    [
+        name: "dimRate", type: "enum", title:"Dim Up/Down Rate",
+        parameterNumber: 6, size: 1, defaultValue: "0",
+        description: "Dim up/down the light to the specified level by command except value O and FF",
+        options:[
+            "0": "Quickly",
+            "1": "Slowly"
+        ]
+    ],
+    [
         name: "switchMode", type: "enum", title:"Switch Mode",
         parameterNumber: 16, size: 1, defaultValue: "0",
         description: "Enable/Disable Switch Mode",
@@ -420,17 +439,6 @@ private getParameterMap(){[
         ]
     ],
     [
-        name: "ledIndication", type: "enum", title:"LED indication configuration",
-        parameterNumber: 3, size: 1, defaultValue: "0",
-        description: "Controls the LED behavior",
-        options:[
-            "0": "Device Off",
-            "1": "Device On",
-            "2": "Always Off",
-            "3": "Always On"
-        ]
-    ],
-    [
         name: "minDimThreashold", type: "number", title:"Minimum Dim Threshold", range:"1..99",
         parameterNumber: 30, size: 1, defaultValue: "1",
         description: "Set the minimum dimmer threshold when manually or remotely controlled"
@@ -444,15 +452,6 @@ private getParameterMap(){[
         name: "defaultBrightnessLevel", type: "number", title:"Default Brightness Level", range:"0..99",
         parameterNumber: 32, size: 1, defaultValue: "0",
         description: "Set the default brightness level that the dimmer will turn on when being turned on manually. 0 to Disable"
-    ],
-    [
-        name: "dimRate", type: "enum", title:"Dim Up/Down Rate",
-        parameterNumber: 6, size: 1, defaultValue: "0",
-        description: "Dim up/down the light to the specified level by command except value O and FF",
-        options:[
-            "0": "Quickly",
-            "1": "Slowly"
-        ]
     ]
 ]}
 
