@@ -104,6 +104,17 @@ metadata {
             range: "0..1000",
             required: false
         )
+        input(
+            name: "motionHandler",
+            type: "enum",
+            title: "Motion Handler Device",
+            defaultValue: "0",
+            options: [
+                "0" : "Enable",
+                "1" : "Disable"
+            ],
+            required: false
+        )
         input (
             title: 'Data Sync',
             description: 'Data Sync for devices',
@@ -305,13 +316,27 @@ private zwaveEvent(physicalgraph.zwave.commands.manufacturerspecificv2.Manufactu
     updateDataValue("manufacturer", cmd.manufacturerName)
 }
 
+private zwaveEvent(physicalgraph.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
+	if (cmd.commandClass == 0x6C && cmd.parameter.size >= 4) { // Supervision encapsulated Message
+		// Supervision header is 4 bytes long, two bytes dropped here are the latter two bytes of the supervision header
+		cmd.parameter = cmd.parameter.drop(2)
+		// Updated Command Class/Command now with the remaining bytes
+		cmd.commandClass = cmd.parameter[0]
+		cmd.command = cmd.parameter[1]
+		cmd.parameter = cmd.parameter.drop(2)
+	}
+	def encapsulatedCommand = cmd.encapsulatedCommand()
+    zwaveEvent(encapsulatedCommand)
+}
+
 private createChildSensor(){
     def name = "${device.displayName} Sensor"
     def id = "${device.deviceNetworkId}:1"
-    if (!childDevices && (sceneHandler == null || sceneHandler=="0")){
+    if (!childDevices && (motionHandler == null || motionHandler=="0")){
         def childButton = addChildDevice("rym002", "Child Motion Sensor", id , device.hubId,
                     [completedSetup: true, label: name, isComponent: false])
-    }else if (childDevices && sceneHandler){
+        childButton.sendEvent(name:"motion", value:"inactive")
+    }else if (childDevices && motionHandler=="1"){
         deleteChildDevice(id)
     }
 }
