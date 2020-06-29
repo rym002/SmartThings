@@ -16,8 +16,7 @@
 import groovy.json.JsonOutput
 metadata {
 	definition (name: "Jasco Motion Switch", namespace: "rym002", author: "Ray Munian", cstHandler: true, 
-    			ocfDeviceType: "oic.d.light", mnmn: "SmartThings", vid:"generic-doorbell-2") {
-		capability "Motion Sensor"
+    			ocfDeviceType: "oic.d.light", mnmn: "SmartThings", vid:"generic-switch") {
 		capability "Switch"
         capability "Configuration"
         capability "Health Check"
@@ -104,6 +103,17 @@ metadata {
             range: "0..1000",
             required: false
         )
+        input(
+            name: "motionHandler",
+            type: "enum",
+            title: "Motion Handler Device",
+            defaultValue: "0",
+            options: [
+                "0" : "Enable",
+                "1" : "Disable"
+            ],
+            required: false
+        )
         input (
             title: 'Data Sync',
             description: 'Data Sync for devices',
@@ -140,19 +150,24 @@ private initialize(){
     def allCommands = [
         zwave.versionV1.versionGet(),
         zwave.firmwareUpdateMdV2.firmwareMdGet(),
-        zwave.manufacturerSpecificV2.manufacturerSpecificGet(),
-        zwave.powerlevelV1.powerlevelGet(),
-    ]  + processAssociations() + allConfigGetCommands
+        zwave.manufacturerSpecificV2.manufacturerSpecificGet()
+    ]  + childInit() + processAssociations() + allConfigGetCommands
     allCommands
 }
 
 def installed() {
     log.debug "installed"
+    createChildSensor()
+    
+    childDevices.each{
+    	it.installed()
+    }
     return response(refresh())
 }
 
 def updated() {
     log.debug "updated"
+    createChildSensor()
     def allCommands = updatePreferences()
     if (syncSettings){
         device.updateSetting "syncSettings", null
@@ -167,9 +182,10 @@ def updated() {
 
 def refresh() {
     log.debug "refresh"
-    return commands([
-    	zwave.switchBinaryV1.switchBinaryGet(),
-        zwave.notificationV3.notificationGet(notificationType:0x07)] , commandDelay)
+    return commands([ zwave.switchBinaryV1.switchBinaryGet()
+                    ] + childDevices.collect{
+                        it.refresh()
+                    }.flatten() , commandDelay)
 }
 
 
@@ -222,16 +238,6 @@ private zwaveEvent(physicalgraph.zwave.commands.switchbinaryv1.SwitchBinaryRepor
     switchEvent cmd
 }
 
-private zwaveEvent(physicalgraph.zwave.commands.notificationv3.NotificationReport cmd) {
-	if (cmd.notificationType == 0x07) {
-		if (cmd.event == 0x08) {				// detected
-			createEvent(name: "motion", value: "active", descriptionText: "$device.displayName detected motion")
-		} else if (cmd.event == 0x00) {			// inactive
-			createEvent(name: "motion", value: "inactive", descriptionText: "$device.displayName motion has stopped")
-		}
-	}
-}
-
 private zwaveEvent(physicalgraph.zwave.commands.associationv2.AssociationReport cmd) {
     def temp = []
     if (cmd.nodeId != []) {
@@ -249,6 +255,20 @@ private zwaveEvent(physicalgraph.zwave.commands.associationv2.AssociationGroupin
     response(commands(processAssociations(),commandDelay))
 }
 
+private zwaveEvent(physicalgraph.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
+	if (cmd.commandClass == 0x6C && cmd.parameter.size >= 4) { // Supervision encapsulated Message
+		// Supervision header is 4 bytes long, two bytes dropped here are the latter two bytes of the supervision header
+		cmd.parameter = cmd.parameter.drop(2)
+		// Updated Command Class/Command now with the remaining bytes
+		cmd.commandClass = cmd.parameter[0]
+		cmd.command = cmd.parameter[1]
+		cmd.parameter = cmd.parameter.drop(2)
+	}
+	def encapsulatedCommand = cmd.encapsulatedCommand()
+    zwaveEvent(encapsulatedCommand)
+}
+
+
 private zwaveEvent(physicalgraph.zwave.commands.configurationv2.ConfigurationReport cmd) {
     def preference = parameterMap.find( {it.parameterNumber == cmd.parameterNumber} )
     updatePreferenceValue preference, cmd.configurationValue[cmd.size-1]
@@ -265,6 +285,37 @@ private zwaveEvent(physicalgraph.zwave.commands.manufacturerspecificv2.Manufactu
     updateDataValue("MSR", msr)
     updateDataValue("manufacturer", cmd.manufacturerName)
 }
+
+private zwaveEvent(physicalgraph.zwave.Command cmd) {
+	def childCmds = childDevices.collect{
+    	it.zwaveEvent(cmd)
+    }.findAll{
+    	it!=1
+    }
+    if (childCmds){
+    	def realCmds = childCmds.findAll{
+        	it!=null
+        }
+        if (realCmds){
+        	return realCmds
+        }
+    }else{
+        log.debug "Unhandled: $cmd"
+    }
+    null
+}
+
+private createChildSensor(){
+    def name = "${device.displayName} Sensor"
+    def id = "${device.deviceNetworkId}:1"
+    if (!childDevices && (motionHandler == null || motionHandler=="0")){
+        def childSensor = addChildDevice("rym002", "Child Motion Sensor", id , device.hubId,
+                    [completedSetup: true, label: name, isComponent: false])
+    }else if (childDevices && motionHandler=="1"){
+        deleteChildDevice(id)
+    }
+}
+
 private toggleSwitch(value){
     commands([
         zwave.switchBinaryV1.switchBinarySet(switchValue: value),
@@ -530,3 +581,10 @@ private getParameterMap(){[
         ]
     ]
 ]}
+
+def childInit(){
+	log.debug("Child Devices Init ${childDevices}")
+	childDevices.collect{
+    	it.initialize()
+    }.flatten()
+}

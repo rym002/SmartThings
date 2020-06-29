@@ -1,5 +1,5 @@
 /**
- * Jasco z-wave dimmer
+ * Jasco z-wave switch
  *
  * Creates a child button for the scene event
  *
@@ -9,15 +9,14 @@
  * Creates child device for actions with button scenes. If there is a vid that supports button and switch, I would be glad to change
  *    Note: Button release action is presented as 6x because there is no release member for supportedButtonValues
  *
- * works with Honeywell 39351/ZW3010
+ * works with Honeywell 39348/ZW4008
  */
 
 import groovy.json.JsonOutput
 metadata {
-    definition(name: "Jasco Z-Wave Dimmer", namespace: "rym002", author: "Ray Munian", 
-        ocfDeviceType: "oic.d.light", mnmn: "SmartThings", vid: "generic-dimmer", 
+    definition(name: "Jasco Z-Wave Switch", namespace: "rym002", author: "Ray Munian", 
+        ocfDeviceType: "oic.d.switch", mnmn: "SmartThings", vid: "generic-switch", 
         runLocally: true, minHubCoreVersion: '000.019.00012', executeCommandsLocally: true, genericHandler: "Z-Wave") {
-        capability "Switch Level"
         capability "Health Check"
         capability "Switch"
         capability "Refresh"
@@ -28,51 +27,13 @@ metadata {
 
         command "setAssociationGroup", ["number", "enum", "number", "number"] // group number, nodes, action (0 - remove, 1 - add), multi-channel endpoint (optional)
 
-        fingerprint mfr: "0039", prod: "4944", model: "3235", deviceJoinName: "Honeywell In-Wall Smart Dimmer"
+        fingerprint mfr: "0039", prod: "4952", model: "3135", deviceJoinName: "Honeywell In-Wall Smart Dimmer"
     }
 
     simulator {
-        status "on": "command: 2603, payload: FF"
-        status "off": "command: 2603, payload: 00"
-        status "09%": "command: 2603, payload: 09"
-        status "10%": "command: 2603, payload: 0A"
-        status "33%": "command: 2603, payload: 21"
-        status "66%": "command: 2603, payload: 42"
-        status "99%": "command: 2603, payload: 63"
-
-        // reply messages
-        reply "2001FF,delay 200,2602": "command: 2603, payload: FF"
-        reply "200100,delay 200,2602": "command: 2603, payload: 00"
-        reply "200119,delay 200,2602": "command: 2603, payload: 19"
-        reply "200132,delay 200,2602": "command: 2603, payload: 32"
-        reply "20014B,delay 200,2602": "command: 2603, payload: 4B"
-        reply "200163,delay 200,2602": "command: 2603, payload: 63"
     }
 
     tiles(scale: 2) {
-        multiAttributeTile(name: "switch", type: "lighting", width: 6, height: 4, canChangeIcon: true) {
-            tileAttribute("device.switch", key: "PRIMARY_CONTROL") {
-                attributeState "on", label: '${name}', action: "switch.off", icon: "st.switches.switch.on", backgroundColor: "#00a0dc", nextState: "turningOff"
-                attributeState "off", label: '${name}', action: "switch.on", icon: "st.switches.switch.off", backgroundColor: "#ffffff", nextState: "turningOn"
-                attributeState "turningOn", label: '${name}', action: "switch.off", icon: "st.switches.switch.on", backgroundColor: "#00a0dc", nextState: "turningOff"
-                attributeState "turningOff", label: '${name}', action: "switch.on", icon: "st.switches.switch.off", backgroundColor: "#ffffff", nextState: "turningOn"
-            }
-            tileAttribute("device.level", key: "SLIDER_CONTROL") {
-                attributeState "level", action: "switch level.setLevel"
-            }
-        }
-
-        standardTile("refresh", "device.switch", width: 2, height: 2, inactiveLabel: false, decoration: "flat") {
-            state "default", label: '', action: "refresh.refresh", icon: "st.secondary.refresh"
-        }
-
-        valueTile("level", "device.level", inactiveLabel: false, decoration: "flat", width: 2, height: 2) {
-            state "level", label: '${currentValue} %', unit: "%", backgroundColor: "#ffffff"
-        }
-
-        main(["switch"])
-        details(["switch", "level", "refresh"])
-
     }
     preferences {
         input (
@@ -132,14 +93,6 @@ metadata {
             description: 'Tweaks for the device',
             type: "paragraph",
             element: "paragraph"
-        )
-        input(
-            name: "dimmingDuration",
-            type: "number",
-            title: "Dimming Duration",
-            defaultValue: "0",
-            range: "0..255",
-            required: false
         )
         input(
             name: "commandDelay",
@@ -207,6 +160,7 @@ def installed() {
     childDevices.each{
     	it.installed()
     }
+    
     response(refresh())
 }
 
@@ -245,11 +199,11 @@ def parse(description) {
 }
 
 def on() {
-    changeSwitchLevel 0xFF, dimmingDuration
+	toggleSwitch 0xFF
 }
 
 def off() {
-    changeSwitchLevel 0x00, dimmingDuration
+	toggleSwitch 0x00
 }
 
 def ping() {
@@ -257,23 +211,12 @@ def ping() {
     refresh()
 }
 
-def setLevel(level) {
-    setLevel level, rawDimmingDuration
-}
-
-def setLevel(level, rate) {
-    def intValue = level as Integer
-    def newLevel = Math.max(Math.min(intValue, 99), 0)
-    def levelRate = dimmingDurationValue(rate)
-    changeSwitchLevel newLevel, levelRate
-}
-
 def refresh() {
     log.debug "refresh"
     commands([zwave.switchMultilevelV3.switchMultilevelGet()] 
-             + childDevices.each{
-                 it.refresh()
-             }, commandDelay)
+    	+ childDevices.collect{
+            it.refresh()
+        }.flatten(), commandDelay)
 }
 
 def setAssociationGroup(group, nodes, action, endpoint = null){
@@ -294,20 +237,11 @@ def setAssociationGroup(group, nodes, action, endpoint = null){
 }
 
 private zwaveEvent(physicalgraph.zwave.commands.basicv1.BasicReport cmd) {
-    dimmerEvents cmd
-}
-private zwaveEvent(physicalgraph.zwave.commands.basicv1.BasicSet cmd) {
-    dimmerEvents cmd
-}
-private zwaveEvent(physicalgraph.zwave.commands.switchmultilevelv3.SwitchMultilevelSet cmd) {
-    dimmerEvents cmd
-}
-private zwaveEvent(physicalgraph.zwave.commands.switchmultilevelv3.SwitchMultilevelReport cmd) {
-    dimmerEvents cmd
+    switchEvent cmd
 }
 
-private zwaveEvent(physicalgraph.zwave.commands.powerlevelv1.PowerlevelReport cmd) {
-    createEvent(name: "power", value: powerLevel)
+private zwaveEvent(physicalgraph.zwave.commands.switchbinaryv1.SwitchBinaryReport cmd) {
+    switchEvent cmd
 }
 
 private zwaveEvent(physicalgraph.zwave.commands.securityv1.SecurityMessageEncapsulation cmd) {
@@ -414,24 +348,6 @@ private getParameterMap(){[
         ]
     ],
     [
-        name: "dimRate", type: "enum", title:"Dim Up/Down Rate",
-        parameterNumber: 6, size: 1, defaultValue: "0",
-        description: "Dim up/down the light to the specified level by command except value O and FF",
-        options:[
-            "0": "Quickly",
-            "1": "Slowly"
-        ]
-    ],
-    [
-        name: "switchMode", type: "enum", title:"Switch Mode",
-        parameterNumber: 16, size: 1, defaultValue: "0",
-        description: "Enable/Disable Switch Mode",
-        options:[
-            "0":"Dimmer",
-            "1":"Switch"
-        ]
-    ],
-    [
         name: "alternateExclusion", type: "enum", title:"Alternate Exclusion",
         parameterNumber: 19, size: 1, defaultValue: "0",
         description: "Normal:Press any button on the switch. \nAlternate: Press two times ON button and two times OFF button, LED will flash 5 times if exclusion succeed",
@@ -439,21 +355,6 @@ private getParameterMap(){[
             "0": "Normal",
             "1": "Alternate"
         ]
-    ],
-    [
-        name: "minDimThreashold", type: "number", title:"Minimum Dim Threshold", range:"1..99",
-        parameterNumber: 30, size: 1, defaultValue: "1",
-        description: "Set the minimum dimmer threshold when manually or remotely controlled"
-    ],
-    [
-        name: "maxBrightnessThreashold", type: "number", title:"Maximum Brightness Threshold", range:"1..99",
-        parameterNumber: 31, size: 1, defaultValue: "99",
-        description: "Set the maximum brightness threshold when manually or remotely controlled"
-    ],
-    [
-        name: "defaultBrightnessLevel", type: "number", title:"Default Brightness Level", range:"0..99",
-        parameterNumber: 32, size: 1, defaultValue: "0",
-        description: "Set the default brightness level that the dimmer will turn on when being turned on manually. 0 to Disable"
     ]
 ]}
 
@@ -522,15 +423,6 @@ private updatePreferenceValue(preference, value = "default") {
     updateDataValue(preference.name, dataValue)
 }
 
-private getRawDimmingDuration(){
-    settings.dimmingDuration ? settings.dimmingDuration : 0
-}
-private dimmingDurationValue(rate){
-    rate < 128 ? rate : 128 + Math.round(rate / 60)
-}
-private getDimmingDuration(){
-    dimmingDurationValue(rawDimmingDuration)
-}
 
 private getCommandDelay(){
     settings.commandDelay ? settings.commandDelay : 200
@@ -540,10 +432,10 @@ private commands(commands, delay = 200) {
     delayBetween(commands.collect { command(it) }, delay)
 }
 
-private changeSwitchLevel(value, dimmingDuration = 0){
-	commands([
-        zwave.switchMultilevelV3.switchMultilevelSet(value: value, dimmingDuration: dimmingDuration),
-        zwave.switchMultilevelV3.switchMultilevelGet()
+private toggleSwitch(value){
+    commands([
+        zwave.switchBinaryV1.switchBinarySet(switchValue: value),
+        zwave.switchBinaryV1.switchBinaryGet()
     ], commandDelay)
 }
 
@@ -561,13 +453,9 @@ private command(physicalgraph.zwave.Command cmd) {
     }
 }
 
-private dimmerEvents(physicalgraph.zwave.Command cmd) {
+private switchEvent(physicalgraph.zwave.Command cmd){
     def value = (cmd.value ? "on" : "off")
-    def result = [createEvent(name: "switch", value: value)]
-    if (cmd.value && cmd.value <= 100) {
-        result << createEvent(name: "level", value: cmd.value == 99 ? 100 : cmd.value)
-    }
-    return result
+    return [createEvent(name: "switch", value: value)]
 }
 
 private createChildButton(){

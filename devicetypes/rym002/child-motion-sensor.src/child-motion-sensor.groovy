@@ -23,6 +23,30 @@ metadata {
 	}
 }
 
-def installed() {
+def initialize(){
+    [
+    	
+    ]
+}
 
+def refresh(){
+	[
+    	zwave.notificationV3.notificationGet(notificationType:0x07)
+    ]
+}
+def installed() {
+    sendEvent(name:"motion", value:"inactive")
+}
+
+public zwaveEvent(physicalgraph.zwave.commands.notificationv3.NotificationReport cmd) {
+	if (cmd.notificationType == 0x07) {
+        if (childDevices){
+            def childDevice = childDevices[0]
+            if (cmd.event == 0x08) {				// detected
+                sendEvent(name: "motion", value: "active", descriptionText: "$device.displayName detected motion")
+            } else if (cmd.event == 0x00) {			// inactive
+                sendEvent(name: "motion", value: "inactive", descriptionText: "$device.displayName motion has stopped")
+            }
+        }
+	}
 }

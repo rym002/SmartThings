@@ -151,15 +151,19 @@ private initialize(){
     def allCommands = [
         zwave.versionV1.versionGet(),
         zwave.firmwareUpdateMdV2.firmwareMdGet(),
-        zwave.manufacturerSpecificV2.manufacturerSpecificGet(),
-        zwave.centralSceneV1.centralSceneSupportedGet()
-    ]  + processAssociations() + allConfigGetCommands
+        zwave.manufacturerSpecificV2.manufacturerSpecificGet()
+    ]  + childInit() + processAssociations() + allConfigGetCommands
     allCommands
 }
 
 def installed() {
     log.debug "installed"
     createChildSensor()
+    
+    childDevices.each{
+    	it.installed()
+    }
+    
     return response(refresh())
 }
 
@@ -181,8 +185,10 @@ def updated() {
 def refresh() {
     log.debug "refresh"
     return commands([
-    	zwave.switchMultilevelV3.switchMultilevelGet(),
-        zwave.notificationV3.notificationGet(notificationType:0x07)] , commandDelay)
+    	zwave.switchMultilevelV3.switchMultilevelGet()
+        ] + childDevices.collect{
+        	it.refresh()
+        }.flatten(), commandDelay)
 }
 
 
@@ -251,19 +257,6 @@ private zwaveEvent(physicalgraph.zwave.commands.switchmultilevelv3.SwitchMultile
     dimmerEvents cmd
 }
 
-private zwaveEvent(physicalgraph.zwave.commands.notificationv3.NotificationReport cmd) {
-	if (cmd.notificationType == 0x07) {
-        if (childDevices){
-            def childDevice = childDevices[0]
-            if (cmd.event == 0x08) {				// detected
-                childDevice.sendEvent(name: "motion", value: "active", descriptionText: "$device.displayName detected motion")
-            } else if (cmd.event == 0x00) {			// inactive
-                childDevice.sendEvent(name: "motion", value: "inactive", descriptionText: "$device.displayName motion has stopped")
-            }
-        }
-	}
-}
-
 private zwaveEvent(physicalgraph.zwave.commands.associationv2.AssociationReport cmd) {
     def temp = []
     if (cmd.nodeId != []) {
@@ -279,24 +272,6 @@ private zwaveEvent(physicalgraph.zwave.commands.associationv2.AssociationReport 
 private zwaveEvent(physicalgraph.zwave.commands.associationv2.AssociationGroupingsReport cmd) {
     sendEvent(name: "groups", value: cmd.supportedGroupings)
     response(commands(processAssociations(),commandDelay))
-}
-
-private zwaveEvent(physicalgraph.zwave.commands.centralscenev1.CentralSceneNotification cmd) {
-    // keyAttributes: 0= click 1 = release 2 = hold  3 = double click, 4 = triple click
-    // sceneNumber: 1=up 2=down
-    log.debug "CentralSceneNotification ${cmd.keyAttributes} : ${cmd.sceneNumber} : ${cmd.sequenceNumber}"
-    def modified = cmd.sceneNumber == 2 ? sceneButtonNames.size/2 : 0
-    def eventIndex = cmd.keyAttributes + modified
-
-    def buttonEvent = sceneButtonNames[eventIndex.intValue()]
-
-    if (buttonEvent && childDevices){
-        childDevices[0].sendEvent(name: "button", value: buttonEvent)
-    }
-}
-
-private zwaveEvent(physicalgraph.zwave.commands.centralscenev1.CentralSceneSupportedReport cmd) {
-    updateDataValue("supportedScenes", "${cmd.supportedScenes}")
 }
 
 private zwaveEvent(physicalgraph.zwave.commands.configurationv2.ConfigurationReport cmd) {
@@ -329,13 +304,31 @@ private zwaveEvent(physicalgraph.zwave.commands.multichannelv3.MultiChannelCmdEn
     zwaveEvent(encapsulatedCommand)
 }
 
+private zwaveEvent(physicalgraph.zwave.Command cmd) {
+	def childCmds = childDevices.collect{
+    	it.zwaveEvent(cmd)
+    }.findAll{
+    	it!=1
+    }
+    if (childCmds){
+    	def realCmds = childCmds.findAll{
+        	it!=null
+        }
+        if (realCmds){
+        	return realCmds
+        }
+    }else{
+        log.debug "Unhandled: $cmd"
+    }
+    null
+}
+
 private createChildSensor(){
     def name = "${device.displayName} Sensor"
     def id = "${device.deviceNetworkId}:1"
     if (!childDevices && (motionHandler == null || motionHandler=="0")){
-        def childButton = addChildDevice("rym002", "Child Motion Sensor", id , device.hubId,
+        def childSensor = addChildDevice("rym002", "Child Motion Sensor", id , device.hubId,
                     [completedSetup: true, label: name, isComponent: false])
-        childButton.sendEvent(name:"motion", value:"inactive")
     }else if (childDevices && motionHandler=="1"){
         deleteChildDevice(id)
     }
@@ -686,3 +679,10 @@ private getParameterMap(){[
         ]
     ]
 ]}
+
+def childInit(){
+	log.debug("Child Devices Init ${childDevices}")
+	childDevices.collect{
+    	it.initialize()
+    }.flatten()
+}
