@@ -32,47 +32,9 @@ metadata {
     }
 
     simulator {
-        status "on": "command: 2603, payload: FF"
-        status "off": "command: 2603, payload: 00"
-        status "09%": "command: 2603, payload: 09"
-        status "10%": "command: 2603, payload: 0A"
-        status "33%": "command: 2603, payload: 21"
-        status "66%": "command: 2603, payload: 42"
-        status "99%": "command: 2603, payload: 63"
-
-        // reply messages
-        reply "2001FF,delay 200,2602": "command: 2603, payload: FF"
-        reply "200100,delay 200,2602": "command: 2603, payload: 00"
-        reply "200119,delay 200,2602": "command: 2603, payload: 19"
-        reply "200132,delay 200,2602": "command: 2603, payload: 32"
-        reply "20014B,delay 200,2602": "command: 2603, payload: 4B"
-        reply "200163,delay 200,2602": "command: 2603, payload: 63"
     }
 
     tiles(scale: 2) {
-        multiAttributeTile(name: "switch", type: "lighting", width: 6, height: 4, canChangeIcon: true) {
-            tileAttribute("device.switch", key: "PRIMARY_CONTROL") {
-                attributeState "on", label: '${name}', action: "switch.off", icon: "st.switches.switch.on", backgroundColor: "#00a0dc", nextState: "turningOff"
-                attributeState "off", label: '${name}', action: "switch.on", icon: "st.switches.switch.off", backgroundColor: "#ffffff", nextState: "turningOn"
-                attributeState "turningOn", label: '${name}', action: "switch.off", icon: "st.switches.switch.on", backgroundColor: "#00a0dc", nextState: "turningOff"
-                attributeState "turningOff", label: '${name}', action: "switch.on", icon: "st.switches.switch.off", backgroundColor: "#ffffff", nextState: "turningOn"
-            }
-            tileAttribute("device.level", key: "SLIDER_CONTROL") {
-                attributeState "level", action: "switch level.setLevel"
-            }
-        }
-
-        standardTile("refresh", "device.switch", width: 2, height: 2, inactiveLabel: false, decoration: "flat") {
-            state "default", label: '', action: "refresh.refresh", icon: "st.secondary.refresh"
-        }
-
-        valueTile("level", "device.level", inactiveLabel: false, decoration: "flat", width: 2, height: 2) {
-            state "level", label: '${currentValue} %', unit: "%", backgroundColor: "#ffffff"
-        }
-
-        main(["switch"])
-        details(["switch", "level", "refresh"])
-
     }
     preferences {
         input (
@@ -187,22 +149,18 @@ metadata {
 
 def configure() {
     log.debug "configure"
-    commands(initialize(), commandDelay)
+    commands(initialize())
 }
 
 private initialize(){
     // Device-Watch simply pings if no device events received for checkInterval duration of 32min = 2 * 15min + 2min lag time
     sendEvent(name: "checkInterval", value: 2 * 15 * 60 + 2 * 60, displayed: false, data: [protocol: "zwave", hubHardwareId: device.hub.hardwareID, offlinePingable: "1"])
-    def allCommands = [
-        zwave.versionV1.versionGet(),
-        zwave.firmwareUpdateMdV2.firmwareMdGet(),
-        zwave.manufacturerSpecificV2.manufacturerSpecificGet()
-    ]  + childInit() + processAssociations() + allConfigGetCommands
+    def allCommands = childInit()
     allCommands
 }
 def installed() {
     log.debug "installed"
-    createChildButton()
+    createChildren()
     
     childDevices.each{
     	it.installed()
@@ -215,17 +173,17 @@ def uninstalled(){
 }
 def updated() {
     log.debug "updated"
-    createChildButton()
-    def allCommands = updatePreferences()
+    createSceneDevice()
+    def allCommands = configurationDevice.updatePreferences()
     if (syncSettings){
         device.updateSetting "syncSettings", null
-        allCommands += allConfigGetCommands
+        allCommands += configurationDevice.allConfigGetCommands
     }
     if (syncAssociations){
         device.updateSetting "syncAssociations", null
-        allCommands += updateAssociations()
+        allCommands += associationDevice.updateAssociations()
     }
-    allCommands ? response(commands(allCommands, commandDelay)) : null
+    allCommands ? response(commands(allCommands)) : null
 }
 
 def parse(description) {
@@ -245,11 +203,11 @@ def parse(description) {
 }
 
 def on() {
-    changeSwitchLevel 0xFF, dimmingDuration
+	commands(switchDevice.on(rawDimmingDuration))
 }
 
 def off() {
-    changeSwitchLevel 0x00, dimmingDuration
+	commands(switchDevice.off(rawDimmingDuration))
 }
 
 def ping() {
@@ -262,52 +220,16 @@ def setLevel(level) {
 }
 
 def setLevel(level, rate) {
-    def intValue = level as Integer
-    def newLevel = Math.max(Math.min(intValue, 99), 0)
-    def levelRate = dimmingDurationValue(rate)
-    changeSwitchLevel newLevel, levelRate
+	commands(switchDevice.setLevel(level,rate))
 }
 
 def refresh() {
     log.debug "refresh"
-    commands([zwave.switchMultilevelV3.switchMultilevelGet()] 
-             + childDevices.each{
-                 it.refresh()
-             }, commandDelay)
+    commands(childRefresh())
 }
 
 def setAssociationGroup(group, nodes, action, endpoint = null){
-    log.debug "group: ${group} , nodes: ${nodes}, action: ${action}, endpoint: ${endpoint}"
-    def name = "desiredAssociation${group}"
-    if (!state."${name}") {
-        state."${name}" = nodes
-    } else {
-        switch (action) {
-            case 0:
-                state."${name}" = state."${name}" - nodes
-            break
-            case 1:
-                state."${name}" = state."${name}" + nodes
-            break
-        }
-    }
-}
-
-private zwaveEvent(physicalgraph.zwave.commands.basicv1.BasicReport cmd) {
-    dimmerEvents cmd
-}
-private zwaveEvent(physicalgraph.zwave.commands.basicv1.BasicSet cmd) {
-    dimmerEvents cmd
-}
-private zwaveEvent(physicalgraph.zwave.commands.switchmultilevelv3.SwitchMultilevelSet cmd) {
-    dimmerEvents cmd
-}
-private zwaveEvent(physicalgraph.zwave.commands.switchmultilevelv3.SwitchMultilevelReport cmd) {
-    dimmerEvents cmd
-}
-
-private zwaveEvent(physicalgraph.zwave.commands.powerlevelv1.PowerlevelReport cmd) {
-    createEvent(name: "power", value: powerLevel)
+    associationDevice.setAssociationGroup(group, nodes, action, endpoint)
 }
 
 private zwaveEvent(physicalgraph.zwave.commands.securityv1.SecurityMessageEncapsulation cmd) {
@@ -317,77 +239,13 @@ private zwaveEvent(physicalgraph.zwave.commands.securityv1.SecurityMessageEncaps
     }
 }
 
-private zwaveEvent(physicalgraph.zwave.commands.configurationv2.ConfigurationReport cmd) {
-    def preference = parameterMap.find( {it.parameterNumber == cmd.parameterNumber} )
-    updatePreferenceValue preference, cmd.configurationValue[cmd.size-1]
-}
-
-private zwaveEvent(physicalgraph.zwave.commands.applicationstatusv1.ApplicationBusy cmd) {
-    def msg
-    switch (cmd.status) {
-        case 0:
-            msg = "Try again later"
-            break
-        case 1:
-            msg = "Try again in ${cmd.waitTime} seconds"
-            break
-        case 2:
-            msg = "Request queued"
-            break
-         default:
-             msg = "Sorry"
-    }
-    createEvent(displayed: true, descriptionText: "${device.displayName} is busy, ${msg}")
-}
-
-private zwaveEvent(physicalgraph.zwave.commands.applicationstatusv1.ApplicationRejectedRequest cmd) {
-    createEvent(displayed: true, descriptionText: "${device.displayName} rejected the last request")
-}
-
-private zwaveEvent(physicalgraph.zwave.commands.deviceresetlocallyv1.DeviceResetLocallyNotification cmd) {
-    log.info "Executing zwaveEvent 5A (DeviceResetLocallyV1) : 01 (DeviceResetLocallyNotification) with cmd: $cmd"
-    createEvent(descriptionText: cmd.toString(), isStateChange: true, displayed: true)
-}
-
-private zwaveEvent(physicalgraph.zwave.commands.firmwareupdatemdv2.FirmwareMdReport cmd) {
-    updateDataValue("firmware", "${cmd.manufacturerId}-${cmd.firmwareId}-${cmd.checksum}")
-}
-
-private zwaveEvent(physicalgraph.zwave.commands.versionv1.VersionReport cmd) {
-    updateDataValue("applicationVersion", "${cmd.applicationVersion}.${cmd.applicationSubVersion}")
-    updateDataValue("zWaveProtocolVersion", "${cmd.zWaveProtocolVersion}.${cmd.zWaveProtocolSubVersion}")
-    updateDataValue("zWaveLibraryType", "${cmd.zWaveLibraryType}")
-}
-
-private zwaveEvent(physicalgraph.zwave.commands.manufacturerspecificv2.ManufacturerSpecificReport cmd) {
-    def msr = String.format("%04X-%04X-%04X", cmd.manufacturerId, cmd.productTypeId, cmd.productId)
-    updateDataValue("MSR", msr)
-    updateDataValue("manufacturer", cmd.manufacturerName)
-}
-
-private zwaveEvent(physicalgraph.zwave.commands.associationv2.AssociationGroupingsReport cmd) {
-    sendEvent(name: "groups", value: cmd.supportedGroupings)
-    response(commands(processAssociations(),commandDelay))
-}
-
-private zwaveEvent(physicalgraph.zwave.commands.associationv2.AssociationReport cmd) {
-    def temp = []
-    if (cmd.nodeId != []) {
-       cmd.nodeId.each {
-          def value = it.toString().format( '%02x', it.toInteger() ).toUpperCase()
-          temp += value
-       }
-    }
-
-    updateDataValue("associationGroup${cmd.groupingIdentifier}", JsonOutput.toJson(temp))
-}
-
 private zwaveEvent(physicalgraph.zwave.Command cmd) {
 	def childCmds = childDevices.collect{
     	it.zwaveEvent(cmd)
     }.findAll{
     	it!=1
-    }
+    }.flatten()
+    
     if (childCmds){
     	def realCmds = childCmds.findAll{
         	it!=null
@@ -457,103 +315,20 @@ private getParameterMap(){[
     ]
 ]}
 
-private updatePreferences(){
-    parameterMap.collect {
-        def name = it.name
-        def settingValue = settings."$name"
-        def deviceValue = state."$name"
-        def deviceScaledValue = deviceValue
-		def defaultValue = Short.parseShort(it.defaultValue)
-        
-		if (deviceValue==null){
-            deviceValue = it.defaultValue
-            deviceScaledValue = Short.parseShort(deviceValue)
-        }else{
-            if (it.type=="enum"){
-            	settingValue = settingValue !=null ? Short.parseShort(settingValue) : null
-                it.options.each { key,value ->
-                    if (value==deviceValue){
-                        deviceScaledValue = Short.parseShort(key)
-                    }
-                }
-            }else {
-                deviceScaledValue = Short.parseShort(deviceValue)
-            }
-        }
-
-		if (settingValue == null){
-        	if (deviceScaledValue != defaultValue) {
-            	settingValue = defaultValue
-            }else{
-                device.updateSetting name, deviceScaledValue
-            }
-        }        
-        
-        if (settings.syncSettings){
-            if (it.defaultValue==deviceScaledValue){
-                device.updateSetting name, null
-            } else {
-                device.updateSetting name, deviceScaledValue
-            }
-        } else {
-            if (settingValue!=null && deviceScaledValue != settingValue) {
-                log.debug "Preference ${name} has been updated from value: ${deviceScaledValue} to ${settingValue}"
-                return [
-                    zwave.configurationV2.configurationSet(scaledConfigurationValue: settingValue, parameterNumber: it.parameterNumber, size: it.size),
-                    zwave.configurationV2.configurationGet(parameterNumber: it.parameterNumber)
-                ]
-            } else if (deviceValue == null) {
-                log.warn "Preference ${name} no. ${it.parameterNumber} has no value. Please check preference declaration for errors."
-            }
-        }
-    }.collectMany{
-        it == null ? [] : it
-    }
-
-}
-private updatePreferenceValue(preference, value = "default") {
-    def strValue = value == "default" ? preference.defaultValue : "${value}"
-    def dataValue
-    if (preference.type =='enum'){
-        dataValue = preference.options[strValue]
-    } else {
-        dataValue = strValue
-    }
-    updateDataValue(preference.name, dataValue)
-}
 
 private getRawDimmingDuration(){
     settings.dimmingDuration ? settings.dimmingDuration : 0
-}
-private dimmingDurationValue(rate){
-    rate < 128 ? rate : 128 + Math.round(rate / 60)
-}
-private getDimmingDuration(){
-    dimmingDurationValue(rawDimmingDuration)
 }
 
 private getCommandDelay(){
     settings.commandDelay ? settings.commandDelay : 200
 }
 
-private commands(commands, delay = 200) {
-    delayBetween(commands.collect { command(it) }, delay)
+private commands(commands) {
+    commands ? delayBetween(commands.collect { command(it) }, commandDelay) : commands
 }
 
-private changeSwitchLevel(value, dimmingDuration = 0){
-	commands([
-        zwave.switchMultilevelV3.switchMultilevelSet(value: value, dimmingDuration: dimmingDuration),
-        zwave.switchMultilevelV3.switchMultilevelGet()
-    ], commandDelay)
-}
-
-private getAllConfigGetCommands(){
-    parameterMap.collect {
-        zwave.configurationV1.configurationGet(parameterNumber: it.parameterNumber)
-    }
-}
 private command(physicalgraph.zwave.Command cmd) {
-
     if ((zwaveInfo.zw == null && state.sec != 0) || zwaveInfo?.zw?.contains("s")) {
         zwave.securityV1.securityMessageEncapsulation().encapsulate(cmd).format()
     } else {
@@ -561,91 +336,81 @@ private command(physicalgraph.zwave.Command cmd) {
     }
 }
 
-private dimmerEvents(physicalgraph.zwave.Command cmd) {
-    def value = (cmd.value ? "on" : "off")
-    def result = [createEvent(name: "switch", value: value)]
-    if (cmd.value && cmd.value <= 100) {
-        result << createEvent(name: "level", value: cmd.value == 99 ? 100 : cmd.value)
-    }
-    return result
+private createChildren(){
+	createSceneDevice()
+    createSwitchDevice()
+    createAssociationDevice()
+    createConfigurationDevice()
 }
 
-private createChildButton(){
+private findChildDevice(networkId){
+	childDevices.find{
+    	it.deviceNetworkId==networkId
+    }
+}
+
+private getSceneDeviceId(){
+	"${device.deviceNetworkId}:Scene"
+}
+
+private getSceneDevice(){
+	findChildDevice sceneDeviceId
+}
+
+private createSceneDevice(){
     def name = "${device.displayName} Scenes"
-    def id = "${device.deviceNetworkId}:1"
-    if (!childDevices && (sceneHandler == null || sceneHandler=="0")){
-        def childButton = addChildDevice("rym002", "Jasco Scene Controller", id , device.hubId,
-                    [completedSetup: true, label: name, isComponent: false])
-    }else if (childDevices && sceneHandler){
-        deleteChildDevice(id)
+    if (!sceneDevice && (sceneHandler == null || sceneHandler=="0")){
+        addChildDevice("rym002", "Jasco Z-Wave Scene Controller", sceneDeviceId , device.hubId,
+                       [completedSetup: true, label: name, isComponent: false])
+    }else if (sceneDevice && sceneHandler=="1"){
+        deleteChildDevice(sceneDeviceId)
     }
 }
 
-private getDefaultAssociations() {
-    def smartThingsHubID = (zwaveHubNodeId.toString().format( '%02x', zwaveHubNodeId )).toUpperCase()
-    [
-        1 : [smartThingsHubID]
-    ]
+private getSwitchDeviceId(){
+	"${device.deviceNetworkId}:Switch"
+}
+private getSwitchDevice(){
+    findChildDevice switchDeviceId
 }
 
-private updateAssociations(){
-   def groups = device.currentValue("groups")
-   if (groups){
-           def da = defaultAssociations
-        return (1..groups).collect{ groupId->
-            state.remove("desiredAssociation${groupId}")
-            updateDataValue("associationGroup${groupId}", null)
-            return zwave.associationV2.associationGet(groupingIdentifier:groupId)
-        }
-    }else{
-        return [zwave.associationV2.associationGroupingsGet()]
+private createSwitchDevice(){
+    def name = "${device.displayName} Switch"
+    if (!switchDevice){
+        addChildDevice("rym002", "Jasco Z-Wave Child Dimmer", switchDeviceId , device.hubId,
+                       [completedSetup: true, label: name, isComponent: true])
     }
 }
-private processAssociations(){
-   def cmds = []
-   def groups = device.currentValue("groups")
-   if (groups){
-        def da = defaultAssociations
-        cmds = (1..groups).collect{ groupId->
-            def associationGroup = state."associationGroup${groupId}"
-               def currentNodes = associationGroup ? new groovy.json.JsonSlurper().parseText(associationGroup): null
-               if (currentNodes != null) {
-                def nodeCmds = []
-                def defaultNodes = da.containsKey(groupId) ? da[groupId] : []
-                def desiredNodes = state."desiredAssociation${groupId}"
-                
-                if (desiredNodes!=null || defaultNodes) {                    
-                    nodeCmds += ((desiredNodes? desiredNodes : [] + defaultNodes) - currentNodes).collect {
-                        if (it != null) {
-                            return zwave.associationV2.associationSet(groupingIdentifier:groupId, nodeId:Integer.parseInt(it,16))
-                        }
-                    }
-                    
-                    nodeCmds += ((currentNodes - defaultNodes) - desiredNodes).collect {
-                        if (it != null) {
-                            return zwave.associationV2.associationRemove(groupingIdentifier:groupId, nodeId:Integer.parseInt(it,16))
-                        }
-                    }
-                                        
-                    if (nodeCmds) {
-                        nodeCmds +=  zwave.associationV2.associationGet(groupingIdentifier:groupId)
-                    } else {
-                        log.info "There are no association actions to complete for group ${groupId}"
-                    }
-                	return nodeCmds
-                }
-           } else {
-               log.warn "Nodes not found for group ${groupId}"
-               return [zwave.associationV2.associationGet(groupingIdentifier:groupId)]
-           }
-        }.collectMany{
-            it == null ? [] : it
-        }
-       } else {
-           log.warn "no groups found in state"
-        cmds << zwave.associationV2.associationGroupingsGet()
-       }
-       return cmds
+
+private getAssociationDeviceId(){
+	"${device.deviceNetworkId}:Association"
+}
+private getAssociationDevice(){
+    findChildDevice associationDeviceId
+}
+
+private createAssociationDevice(){
+    def name = "${device.displayName} Association"
+    if (!associationDevice){
+        addChildDevice("rym002", "Jasco Z-Wave Child Association", associationDeviceId , device.hubId,
+                       [completedSetup: true, label: name, isComponent: true])
+    }
+}
+
+private getConfigurationDeviceId(){
+	"${device.deviceNetworkId}:Configuration"
+}
+private getConfigurationDevice(){
+    findChildDevice configurationDeviceId
+}
+
+private createConfigurationDevice(){
+    def name = "${device.displayName} Configuration"
+    if (!configurationDevice){
+        def config = addChildDevice("rym002", "Jasco Z-Wave Child Configuration", configurationDeviceId , device.hubId,
+                       [completedSetup: true, label: name, isComponent: true])
+        config.sendEvent(name:"parametersMap",value:JsonOutput.toJson(parameterMap))
+    }
 }
 
 def childInit(){
@@ -653,4 +418,19 @@ def childInit(){
 	childDevices.collect{
     	it.initialize()
     }.flatten()
+}
+
+def childRefresh(){
+	childDevices.collect{
+    	it.childRefresh()
+    }.flatten()
+}
+
+def setGroupsValue(groups){
+    sendEvent(name: "groups", value: groups)
+}
+
+def getGroupsValue(){
+	def groups = device.currentValue("groups")
+    groups ? groups.toInteger() : null
 }

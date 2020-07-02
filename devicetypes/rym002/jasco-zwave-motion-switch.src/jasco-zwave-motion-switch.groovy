@@ -1,40 +1,41 @@
 /**
- * Jasco z-wave switch
+ *  Jasco Z-Wave Motion Switch
  *
- * Creates a child button for the scene event
+ *  Copyright 2020 Ray Munian
  *
- * Supports Z-Wave Association Tool
- *  See: https://community.inovelli.com/t/how-to-using-the-z-wave-association-tool-in-smartthings/1944 for info
+ *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ *  in compliance with the License. You may obtain a copy of the License at:
  *
- * Creates child device for actions with button scenes. If there is a vid that supports button and switch, I would be glad to change
- *    Note: Button release action is presented as 6x because there is no release member for supportedButtonValues
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * works with Honeywell 39348/ZW4008
+ *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
+ *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ *  for the specific language governing permissions and limitations under the License.
  */
-
+ 
 import groovy.json.JsonOutput
 metadata {
-    definition(name: "Jasco Z-Wave Switch", namespace: "rym002", author: "Ray Munian", 
-        ocfDeviceType: "oic.d.switch", mnmn: "SmartThings", vid: "generic-switch", 
-        runLocally: true, minHubCoreVersion: '000.019.00012', executeCommandsLocally: true, genericHandler: "Z-Wave") {
-        capability "Health Check"
-        capability "Switch"
-        capability "Refresh"
-        capability "Sensor"
+	definition (name: "Jasco Z-Wave Motion Switch", namespace: "rym002", author: "Ray Munian", cstHandler: true, 
+    			ocfDeviceType: "oic.d.light", mnmn: "SmartThings", vid:"generic-switch") {
+		capability "Switch"
         capability "Configuration"
+        capability "Health Check"
 
-        attribute "groups", "number"
-
+		attribute "groups", "number"
+        
         command "setAssociationGroup", ["number", "enum", "number", "number"] // group number, nodes, action (0 - remove, 1 - add), multi-channel endpoint (optional)
+        
+		fingerprint mfr: "0063", prod: "494D", model: "3032", deviceJoinName: "GE Smart Motion Switch"
+	}
 
-        fingerprint mfr: "0039", prod: "4952", model: "3135", deviceJoinName: "Honeywell In-Wall Smart Switch"
-    }
 
-    simulator {
-    }
+	simulator {
+		// TODO: define status and reply messages here
+	}
 
-    tiles(scale: 2) {
-    }
+	tiles {
+		// TODO: define your main and details tiles here
+	}
     preferences {
         input (
             title: 'Z Wave Configurations',
@@ -98,14 +99,14 @@ metadata {
             name: "commandDelay",
             type: "number",
             title: "Command Delay Duration",
-            defaultValue: "0",
+            defaultValue: "200",
             range: "0..1000",
             required: false
         )
         input(
-            name: "sceneHandler",
+            name: "motionHandler",
             type: "enum",
-            title: "Scene Handler Device",
+            title: "Motion Handler Device",
             defaultValue: "0",
             options: [
                 "0" : "Enable",
@@ -149,6 +150,7 @@ private initialize(){
     def allCommands = childInit()
     allCommands
 }
+
 def installed() {
     log.debug "installed"
     createChildren()
@@ -156,16 +158,12 @@ def installed() {
     childDevices.each{
     	it.installed()
     }
-    
-    response(refresh())
+    return response(refresh())
 }
 
-def uninstalled(){
-    log.debug "uninstalled"
-}
 def updated() {
     log.debug "updated"
-    createSceneDevice()
+    createChildSensor()
     def allCommands = configurationDevice.updatePreferences()
     if (syncSettings){
         device.updateSetting "syncSettings", null
@@ -177,6 +175,12 @@ def updated() {
     }
     allCommands ? response(commands(allCommands)) : null
 }
+
+def refresh() {
+    log.debug "refresh"
+	commands(childRefresh())
+}
+
 
 def parse(description) {
     def result = null
@@ -193,7 +197,7 @@ def parse(description) {
     }
     result
 }
-
+// handle commands
 def on() {
 	commands(switchDevice.on())
 }
@@ -202,25 +206,21 @@ def off() {
 	commands(switchDevice.off())
 }
 
-def ping() {
-    log.debug "ping"
-    refresh()
-}
-
-def refresh() {
-    log.debug "refresh"
-    commands(childRefresh())
-}
-
 def setAssociationGroup(group, nodes, action, endpoint = null){
     associationDevice.setAssociationGroup(group, nodes, action, endpoint)
 }
 
-private zwaveEvent(physicalgraph.zwave.commands.securityv1.SecurityMessageEncapsulation cmd) {
-    def encapsulatedCommand = cmd.encapsulatedCommand([0x20: 1, 0x25: 1])
-    if (encapsulatedCommand) {
-        zwaveEvent(encapsulatedCommand)
-    }
+private zwaveEvent(physicalgraph.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
+	if (cmd.commandClass == 0x6C && cmd.parameter.size >= 4) { // Supervision encapsulated Message
+		// Supervision header is 4 bytes long, two bytes dropped here are the latter two bytes of the supervision header
+		cmd.parameter = cmd.parameter.drop(2)
+		// Updated Command Class/Command now with the remaining bytes
+		cmd.commandClass = cmd.parameter[0]
+		cmd.command = cmd.parameter[1]
+		cmd.parameter = cmd.parameter.drop(2)
+	}
+	def encapsulatedCommand = cmd.encapsulatedCommand()
+    zwaveEvent(encapsulatedCommand)
 }
 
 private zwaveEvent(physicalgraph.zwave.Command cmd) {
@@ -243,49 +243,8 @@ private zwaveEvent(physicalgraph.zwave.Command cmd) {
     null
 }
 
-private getParameterMap(){[
-    [
-        name: "ledIndication", type: "enum", title:"LED indication configuration",
-        parameterNumber: 3, size: 1, defaultValue: "0",
-        description: "Controls the LED behavior",
-        options:[
-            "0": "Device Off",
-            "1": "Device On",
-            "2": "Always Off",
-            "3": "Always On"
-        ]
-    ],
-    [
-        name: "alternateExclusion", type: "enum", title:"Alternate Exclusion",
-        parameterNumber: 19, size: 1, defaultValue: "0",
-        description: "Normal:Press any button on the switch. \nAlternate: Press two times ON button and two times OFF button, LED will flash 5 times if exclusion succeed",
-        options:[
-            "0": "Normal",
-            "1": "Alternate"
-        ]
-    ]
-]}
-
-
-private getCommandDelay(){
-    settings.commandDelay ? settings.commandDelay : 200
-}
-
-def commands(commands) {
-    commands ? delayBetween(commands.collect { command(it) }, commandDelay) : commands
-}
-
-private command(physicalgraph.zwave.Command cmd) {
-
-    if ((zwaveInfo.zw == null && state.sec != 0) || zwaveInfo?.zw?.contains("s")) {
-        zwave.securityV1.securityMessageEncapsulation().encapsulate(cmd).format()
-    } else {
-        cmd.format()
-    }
-}
-
 private createChildren(){
-	createSceneDevice()
+	createChildSensor()
     createSwitchDevice()
     createAssociationDevice()
     createConfigurationDevice()
@@ -297,21 +256,20 @@ private findChildDevice(networkId){
     }
 }
 
-private getSceneDeviceId(){
-	"${device.deviceNetworkId}:Scene"
+private getSensorDevice(){
+	findChildDevice sensorDeviceId
+}
+private getSensorDeviceId(){
+	"${device.deviceNetworkId}:Sensor"
 }
 
-private getSceneDevice(){
-	findChildDevice sceneDeviceId
-}
-
-private createSceneDevice(){
-    def name = "${device.displayName} Scenes"
-    if (!sceneDevice && (sceneHandler == null || sceneHandler=="0")){
-        addChildDevice("rym002", "Jasco Z-Wave Scene Controller", sceneDeviceId , device.hubId,
-                       [completedSetup: true, label: name, isComponent: false])
-    }else if (sceneDevice && sceneHandler=="1"){
-        deleteChildDevice(sceneDeviceId)
+private createChildSensor(){
+    def name = "${device.displayName} Sensor"
+    if (!sensorDevice && (motionHandler == null || motionHandler=="0")){
+        addChildDevice("rym002", "Jasco Z-Wave Child Motion Sensor", sensorDeviceId , device.hubId,
+                    [completedSetup: true, label: name, isComponent: false])
+    }else if (sensorDevice && motionHandler=="1"){
+        deleteChildDevice(sensorDeviceId)
     }
 }
 
@@ -360,7 +318,120 @@ private createConfigurationDevice(){
         config.sendEvent(name:"parametersMap",value:JsonOutput.toJson(parameterMap))
     }
 }
+private getCommandDelay(){
+    settings.commandDelay ? settings.commandDelay : 200
+}
 
+private commands(commands) {
+    commands ? delayBetween(commands.collect { command(it) }, commandDelay) : commands
+}
+
+private command(physicalgraph.zwave.Command cmd) {
+    if ((zwaveInfo.zw == null && state.sec != 0) || zwaveInfo?.zw?.contains("s")) {
+        zwave.securityV1.securityMessageEncapsulation().encapsulate(cmd).format()
+    } else {
+        cmd.format()
+    }
+}
+
+private getParameterMap(){[
+    [
+        name: "timeoutDuration", type: "enum", title:"Timeout Duration",
+        parameterNumber: 1, size: 1, defaultValue: "5",
+        description: "Normal:Press any button on the switch. \nAlternate: Press two times ON button and two times OFF button, LED will flash 5 times if exclusion succeed",
+        options:[
+            "0":"Test (5s)",
+            "1":"1 minute",
+            "5":"5 minutes",
+            "15":"15 minutes",
+            "30":"30 minutes",
+            "255":"Disable"
+        ]
+    ],
+    [
+        name: "brightness", type: "number", title:"Change brightness of associated light bulb(s)", range:"0..99",
+        parameterNumber: 2, size: 1, defaultValue: "255",
+        description: "brightness of associated light bulb(s)",
+    ],
+    [
+        name: "operationMode", type: "enum", title:"Operation Mode",
+        parameterNumber: 3, size: 1, defaultValue: "3",
+        description: "Operation mode of the motion sensor",
+        options:[
+            "1": "Manual",
+            "2": "Vacancy",
+            "3": "Occupancy"
+        ],
+    ],
+    [
+        name: "associationMode", type: "enum", title:"Enable/Disable Association Mode",
+        parameterNumber: 4, size: 1, defaultValue: "0",
+        description: "Enable/Disable Association Mode",
+        options:[
+            "0":"Disabled",
+            "1":"Enabled"
+        ]
+    ],
+    [
+        name: "invertSwitch", type: "enum", title:"Invert Switch",
+        parameterNumber: 5, size: 1, defaultValue: "0",
+        description: "Invert switch controls",
+        options:[
+            "0":"Disabled",
+            "1":"Enabled"
+        ]
+    ],
+    [
+        name: "motionSensor", type: "enum", title:"Enable/Disable Motion Sensor",
+        parameterNumber: 6, size: 1, defaultValue: "1",
+        description: "Enable/Disable Motion Sensor",
+        options:[
+            "0":"Disabled",
+            "1":"Enabled"
+        ]
+    ],
+    [
+        name: "motionSensorSensitivity", type: "enum", title:"Motion Sensor Sensitivity",
+        parameterNumber: 13, size: 1, defaultValue: "2",
+        description: "Motion Sensor Sensitivity",
+        options:[
+            "1":"High",
+            "2":"Medium",
+            "3":"Low"
+        ]
+    ],
+    [
+        name: "lightSensing", type: "enum", title:"Enable/Disable Light Sensing",
+        parameterNumber: 14, size: 1, defaultValue: "1",
+        description: "Enable/Disable Light Sensing",
+        options:[
+            "0":"Disabled",
+            "1":"Enabled"
+        ]
+    ],
+    [
+        name: "resetCycle", type: "enum", title:"Reset Cycle",
+        parameterNumber: 15, size: 1, defaultValue: "2",
+        description: "Reset Cycle",
+        options:[
+            "0":"Disabled",
+            "1":"10 secs",
+            "2":"20 secs",
+            "3":"30 secs",
+            "4":"45 secs",
+            "110":"27 mins"
+        ]
+    ],
+    [
+        name: "alternateExclusion", type: "enum", title:"Exclusion Mode",
+        parameterNumber: 19, size: 1, defaultValue: "0",
+        description: "Normal:Press any button on the switch. \nAlternate: Press two times ON button and two times OFF button, LED will flash 5 times if exclusion succeed",
+        options:[
+            "0":"Normal",
+            "1":"Alternate"
+        ]
+    ]
+]}
 
 def childInit(){
 	log.debug("Child Devices Init ${childDevices}")
