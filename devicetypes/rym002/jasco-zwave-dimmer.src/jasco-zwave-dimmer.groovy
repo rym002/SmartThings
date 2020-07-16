@@ -1,12 +1,10 @@
 /**
  * Jasco z-wave dimmer
  *
- * Creates a child button for the scene event
- *
  * Supports Z-Wave Association Tool
  *  See: https://community.inovelli.com/t/how-to-using-the-z-wave-association-tool-in-smartthings/1944 for info
  *
- * Creates child device for actions with button scenes. If there is a vid that supports button and switch, I would be glad to change
+ * Creates button automation for scene handler
  *    Note: Button release action is presented as 6x because there is no release member for supportedButtonValues
  *
  * works with Honeywell 39351/ZW3010
@@ -15,7 +13,7 @@
 import groovy.json.JsonOutput
 metadata {
     definition(name: "Jasco Z-Wave Dimmer", namespace: "rym002", author: "Ray Munian", 
-        ocfDeviceType: "oic.d.light", mnmn: "SmartThings", vid: "generic-dimmer", 
+        ocfDeviceType: "oic.d.light", mnmn: "SmartThingsCommunity", vid: "9626e70c-74df-3d58-bdb5-b2998aeabc30", 
         runLocally: true, minHubCoreVersion: '000.019.00012', executeCommandsLocally: true, genericHandler: "Z-Wave") {
         capability "Switch Level"
         capability "Health Check"
@@ -23,6 +21,7 @@ metadata {
         capability "Refresh"
         capability "Sensor"
         capability "Configuration"
+		capability "Button"
 
         attribute "groups", "number"
 
@@ -111,17 +110,6 @@ metadata {
             range: "0..10000",
             required: false
         )
-        input(
-            name: "sceneHandler",
-            type: "enum",
-            title: "Scene Handler Device",
-            defaultValue: "0",
-            options: [
-                "0" : "Enable",
-                "1" : "Disable"
-            ],
-            required: false
-        )
         input (
             title: 'Data Sync',
             description: 'Data Sync for devices',
@@ -159,17 +147,16 @@ private initialize(){
         zwave.versionV1.versionGet(),
         zwave.firmwareUpdateMdV2.firmwareMdGet(),
         zwave.manufacturerSpecificV2.manufacturerSpecificGet()
-    ] + allConfigGetCommands + childInit()
+    ] + allConfigGetCommands
 
     allCommands
 }
 def installed() {
     log.debug "installed"
-    createChildren()
+    sendEvent(name:"numberOfButtons", value: 1, displayed: false)
+	sendEvent(name:"supportedButtonValues", value: sceneButtonNames.encodeAsJson(), displayed: false)
+    sendEvent(name: "button", value: "up")
     
-    childDevices.each{
-    	it.installed()
-    }
     response(refresh())
 }
 
@@ -178,7 +165,6 @@ def uninstalled(){
 }
 def updated() {
     log.debug "updated"
-    createSceneDevice()
     def allCommands = updatePreferences()
     if (syncSettings){
         device.updateSetting "syncSettings", null
@@ -227,9 +213,7 @@ def setLevel(level) {
 
 def refresh() {
     log.debug "refresh"
-    commands(childRefresh()
-             + [zwave.switchMultilevelV3.switchMultilevelGet()]
-            )
+    commands([zwave.switchMultilevelV3.switchMultilevelGet()])
 }
 
 
@@ -241,22 +225,7 @@ private zwaveEvent(physicalgraph.zwave.commands.securityv1.SecurityMessageEncaps
 }
 
 private zwaveEvent(physicalgraph.zwave.Command cmd) {
-	def childCmds = childDevices.collect{
-    	it.zwaveEvent(cmd)
-    }.findAll{
-    	it!=1
-    }.flatten()
-    
-    if (childCmds){
-    	def realCmds = childCmds.findAll{
-        	it!=null
-        }
-        if (realCmds){
-        	return realCmds
-        }
-    }else{
-        log.debug "Unhandled: $cmd"
-    }
+    log.debug "Unhandled: $cmd"
     null
 }
 
@@ -335,50 +304,6 @@ private command(physicalgraph.zwave.Command cmd) {
     } else {
         cmd.format()
     }
-}
-
-private createChildren(){
-	childDevices.each{
-    	deleteChildDevice it.deviceNetworkId
-    }
-	createSceneDevice()
-}
-
-private findChildDevice(networkId){
-	childDevices.find{
-    	it.deviceNetworkId==networkId
-    }
-}
-
-private getSceneDeviceId(){
-	"${device.deviceNetworkId}:Scene"
-}
-
-private getSceneDevice(){
-	findChildDevice sceneDeviceId
-}
-
-private createSceneDevice(){
-    def name = "${device.displayName} Scenes"
-    if (!sceneDevice && (sceneHandler == null || sceneHandler=="0")){
-        addChildDevice("rym002", "Jasco Z-Wave Scene Controller", sceneDeviceId , device.hubId,
-                       [completedSetup: true, label: name, isComponent: false])
-    }else if (sceneDevice && sceneHandler=="1"){
-        deleteChildDevice(sceneDeviceId)
-    }
-}
-
-def childInit(){
-	log.debug("Child Devices Init ${childDevices}")
-	childDevices.collect{
-    	it.initialize()
-    }.flatten()
-}
-
-def childRefresh(){
-	childDevices.collect{
-    	it.childRefresh()
-    }.flatten()
 }
 
 def setGroupsValue(groups){
@@ -652,4 +577,28 @@ private dimmerEvents(physicalgraph.zwave.Command cmd) {
         result << createEvent(name: "level", value: cmd.value == 99 ? 100 : cmd.value)
     }
     return result
+}
+
+
+private getSceneButtonNames(){
+    //6x is used for up/down release since there is no enum value
+    ["up","up_6x","up_hold","up_2x","up_3x","down","down_6x","down_hold","down_2x","down_3x"]
+}
+
+private zwaveEvent(physicalgraph.zwave.commands.centralscenev1.CentralSceneSupportedReport cmd) {
+    updateDataValue("supportedScenes", "${cmd.supportedScenes}")
+}
+
+private zwaveEvent(physicalgraph.zwave.commands.centralscenev1.CentralSceneNotification cmd) {
+    // keyAttributes: 0= click 1 = release 2 = hold  3 = double click, 4 = triple click
+    // sceneNumber: 1=up 2=down
+    log.debug "CentralSceneNotification ${cmd.keyAttributes} : ${cmd.sceneNumber} : ${cmd.sequenceNumber}"
+    def modified = cmd.sceneNumber == 2 ? sceneButtonNames.size/2 : 0
+    def eventIndex = cmd.keyAttributes + modified
+
+    def buttonEvent = sceneButtonNames[eventIndex.intValue()]
+
+    if (buttonEvent){
+        createEvent(name: "button", value: buttonEvent)
+    }
 }
