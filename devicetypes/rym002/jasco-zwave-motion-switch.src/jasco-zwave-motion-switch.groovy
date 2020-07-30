@@ -16,10 +16,12 @@
 import groovy.json.JsonOutput
 metadata {
 	definition (name: "Jasco Z-Wave Motion Switch", namespace: "rym002", author: "Ray Munian", cstHandler: true, 
-    			ocfDeviceType: "oic.d.light", mnmn: "SmartThings", vid:"generic-switch") {
+    			ocfDeviceType: "oic.d.light", mnmn: "SmartThingsCommunity", vid:"241c8035-0d43-3403-bf80-f1ab0c6b9d3c") {
 		capability "Switch"
         capability "Configuration"
         capability "Health Check"
+		capability "Motion Sensor"
+        capability "Refresh"
 
 		attribute "groups", "number"
         
@@ -103,17 +105,6 @@ metadata {
             range: "0..1000",
             required: false
         )
-        input(
-            name: "motionHandler",
-            type: "enum",
-            title: "Motion Handler Device",
-            defaultValue: "0",
-            options: [
-                "0" : "Enable",
-                "1" : "Disable"
-            ],
-            required: false
-        )
         input (
             title: 'Data Sync',
             description: 'Data Sync for devices',
@@ -151,23 +142,19 @@ private initialize(){
         zwave.versionV1.versionGet(),
         zwave.firmwareUpdateMdV2.firmwareMdGet(),
         zwave.manufacturerSpecificV2.manufacturerSpecificGet()
-    ] + allConfigGetCommands + childInit()
+    ] + allConfigGetCommands
     allCommands
 }
 
 def installed() {
     log.debug "installed"
-    createChildren()
-    
-    childDevices.each{
-    	it.installed()
-    }
+    sendEvent(name:"motion", value:"inactive")
+
     return response(refresh())
 }
 
 def updated() {
     log.debug "updated"
-    createChildSensor()
     def allCommands = updatePreferences()
     if (syncSettings){
         device.updateSetting "syncSettings", null
@@ -182,7 +169,10 @@ def updated() {
 
 def refresh() {
     log.debug "refresh"
-	commands(childRefresh())
+	commands([
+        zwave.notificationV3.notificationGet(notificationType:0x07),
+        zwave.switchBinaryV1.switchBinaryGet()
+    ])
 }
 
 
@@ -224,53 +214,8 @@ private zwaveEvent(physicalgraph.zwave.commands.multichannelv3.MultiChannelCmdEn
 }
 
 private zwaveEvent(physicalgraph.zwave.Command cmd) {
-	def childCmds = childDevices.collect{
-    	it.zwaveEvent(cmd)
-    }.findAll{
-    	it!=1
-    }.flatten()
-    
-    if (childCmds){
-    	def realCmds = childCmds.findAll{
-        	it!=null
-        }
-        if (realCmds){
-        	return realCmds
-        }
-    }else{
-        log.debug "Unhandled: $cmd"
-    }
+    log.debug "Unhandled: $cmd"
     null
-}
-
-private createChildren(){
-	childDevices.each{
-    	deleteChildDevice it.deviceNetworkId
-    }
-	createChildSensor()
-}
-
-private findChildDevice(networkId){
-	childDevices.find{
-    	it.deviceNetworkId==networkId
-    }
-}
-
-private getSensorDevice(){
-	findChildDevice sensorDeviceId
-}
-private getSensorDeviceId(){
-	"${device.deviceNetworkId}:Sensor"
-}
-
-private createChildSensor(){
-    def name = "${device.displayName} Sensor"
-    if (!sensorDevice && (motionHandler == null || motionHandler=="0")){
-        addChildDevice("rym002", "Jasco Z-Wave Child Motion Sensor", sensorDeviceId , device.hubId,
-                    [completedSetup: true, label: name, isComponent: false])
-    }else if (sensorDevice && motionHandler=="1"){
-        deleteChildDevice(sensorDeviceId)
-    }
 }
 
 private getCommandDelay(){
@@ -387,19 +332,6 @@ private getParameterMap(){[
         ]
     ]
 ]}
-
-def childInit(){
-	log.debug("Child Devices Init ${childDevices}")
-	childDevices.collect{
-    	it.initialize()
-    }.flatten()
-}
-
-def childRefresh(){
-	childDevices.collect{
-    	it.childRefresh()
-    }.flatten()
-}
 
 def setGroupsValue(groups){
     sendEvent(name: "groups", value: groups)
@@ -657,4 +589,14 @@ private toggleSwitch(value){
 private switchEvent(physicalgraph.zwave.Command cmd){
     def value = (cmd.value ? "on" : "off")
     return [createEvent(name: "switch", value: value)]
+}
+
+private zwaveEvent(physicalgraph.zwave.commands.notificationv3.NotificationReport cmd) {
+	if (cmd.notificationType == 0x07) {
+        if (cmd.event == 0x08) {				// detected
+            sendEvent(name: "motion", value: "active", descriptionText: "$device.displayName detected motion")
+        } else if (cmd.event == 0x00) {			// inactive
+            sendEvent(name: "motion", value: "inactive", descriptionText: "$device.displayName motion has stopped")
+        }
+    }
 }
