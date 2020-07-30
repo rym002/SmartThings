@@ -354,6 +354,7 @@ private zwaveEvent(physicalgraph.zwave.commands.associationv2.AssociationReport 
     }
 
     updateDataValue("associationGroup${cmd.groupingIdentifier}", JsonOutput.toJson(temp))
+    processGroupAssociations cmd.groupingIdentifier
 }
 
 private getDefaultAssociations() {
@@ -377,43 +378,48 @@ def updateAssociations(){
         return [zwave.associationV2.associationGroupingsGet()]
     }
 }
+
+private processGroupAssociations(groupId){
+    def da = defaultAssociations
+    def associationGroup = state."associationGroup${groupId}"
+    def currentNodes = associationGroup ? new groovy.json.JsonSlurper().parseText(associationGroup): null
+    if (currentNodes != null) {
+        def nodeCmds = []
+        def defaultNodes = da.containsKey(groupId) ? da[groupId] : []
+        def desiredNodes = state."desiredAssociation${groupId}"
+
+        if (desiredNodes!=null || defaultNodes) {                    
+            nodeCmds += ((desiredNodes? desiredNodes : [] + defaultNodes) - currentNodes).collect {
+                if (it != null) {
+                    return zwave.associationV2.associationSet(groupingIdentifier:groupId, nodeId:Integer.parseInt(it,16))
+                }
+            }
+
+            nodeCmds += ((currentNodes - defaultNodes) - desiredNodes).collect {
+                if (it != null) {
+                    return zwave.associationV2.associationRemove(groupingIdentifier:groupId, nodeId:Integer.parseInt(it,16))
+                }
+            }
+
+            if (nodeCmds) {
+                nodeCmds +=  zwave.associationV2.associationGet(groupingIdentifier:groupId)
+            } else {
+                log.info "There are no association actions to complete for group ${groupId}"
+            }
+            return nodeCmds
+        }
+    } else {
+        log.warn "Nodes not found for group ${groupId}"
+        return [zwave.associationV2.associationGet(groupingIdentifier:groupId)]
+    }
+}
+
 private processAssociations(){
    def cmds = []
     def groups = groupsValue
     if (groups){
-        def da = defaultAssociations
         cmds = (1..groups).collect{ groupId->
-            def associationGroup = state."associationGroup${groupId}"
-            def currentNodes = associationGroup ? new groovy.json.JsonSlurper().parseText(associationGroup): null
-            if (currentNodes != null) {
-                   def nodeCmds = []
-                   def defaultNodes = da.containsKey(groupId) ? da[groupId] : []
-                   def desiredNodes = state."desiredAssociation${groupId}"
-                
-                   if (desiredNodes!=null || defaultNodes) {                    
-                       nodeCmds += ((desiredNodes? desiredNodes : [] + defaultNodes) - currentNodes).collect {
-                        if (it != null) {
-                            return zwave.associationV2.associationSet(groupingIdentifier:groupId, nodeId:Integer.parseInt(it,16))
-                        }
-                    }
-                    
-                    nodeCmds += ((currentNodes - defaultNodes) - desiredNodes).collect {
-                        if (it != null) {
-                            return zwave.associationV2.associationRemove(groupingIdentifier:groupId, nodeId:Integer.parseInt(it,16))
-                        }
-                    }
-                                        
-                    if (nodeCmds) {
-                        nodeCmds +=  zwave.associationV2.associationGet(groupingIdentifier:groupId)
-                    } else {
-                        log.info "There are no association actions to complete for group ${groupId}"
-                    }
-                    return nodeCmds
-                }
-           } else {
-                   log.warn "Nodes not found for group ${groupId}"
-                   return [zwave.associationV2.associationGet(groupingIdentifier:groupId)]
-           }
+        	processGroupAssociations groupId
         }.collectMany{
             it == null ? [] : it
         }
