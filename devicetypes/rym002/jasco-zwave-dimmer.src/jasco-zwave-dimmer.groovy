@@ -132,6 +132,14 @@ metadata {
             defaultValue: "false",
             required: false
         )
+        input(
+            name: "resetAssociations",
+            type: "bool",
+            title: "Reset Associations",
+            description: "Clear z wave associations from the device.",
+            defaultValue: "false",
+            required: false
+        )
     }
 }
 
@@ -173,6 +181,10 @@ def updated() {
     if (syncAssociations){
         device.updateSetting "syncAssociations", null
         allCommands += updateAssociations()
+    }
+    if (resetAssociations){
+        device.updateSetting "resetAssociations", null
+        allCommands += resetAssociations()
     }
     allCommands ? response(commands(allCommands)) : null
 }
@@ -317,18 +329,14 @@ def getGroupsValue(){
 
 def setAssociationGroup(group, nodes, action, endpoint = null){
     log.debug "group: ${group} , nodes: ${nodes}, action: ${action}, endpoint: ${endpoint}"
-    def name = "desiredAssociation${group}"
-    if (!state."${name}") {
-        state."${name}" = nodes
-    } else {
-        switch (action) {
-            case 0:
-                state."${name}" = state."${name}" - nodes
-            break
-            case 1:
-                state."${name}" = state."${name}" + nodes
-            break
-        }
+    def name = "Association${group}"
+    switch (action) {
+        case 0:
+        state."del${name}" = nodes
+        break
+        case 1:
+        state."add${name}" = nodes
+        break
     }
 }
 
@@ -370,7 +378,6 @@ def updateAssociations(){
    def groups = groupsValue
    if (groups){
         return (1..groups).collect{ groupId->
-            state.remove("desiredAssociation${groupId}")
             updateDataValue("associationGroup${groupId}", null)
             return zwave.associationV2.associationGet(groupingIdentifier:groupId)
         }
@@ -379,35 +386,55 @@ def updateAssociations(){
     }
 }
 
+def resetAssociations(){
+   def groups = groupsValue
+   if (groups){
+        return (1..groups).collect{ groupId->
+            state."delAssociation${groupId}" = associationGroup(groupId)
+            processGroupAssociations(groupId)
+        }.collectMany{
+            it == null ? [] : it
+        }
+    }
+}
+
+private associationGroup(groupId){
+    def associationGroup = state."associationGroup${groupId}"
+    associationGroup ? new groovy.json.JsonSlurper().parseText(associationGroup): null
+}
 private processGroupAssociations(groupId){
     def da = defaultAssociations
-    def associationGroup = state."associationGroup${groupId}"
-    def currentNodes = associationGroup ? new groovy.json.JsonSlurper().parseText(associationGroup): null
+    def currentNodes = associationGroup(groupId)
     if (currentNodes != null) {
         def nodeCmds = []
         def defaultNodes = da.containsKey(groupId) ? da[groupId] : []
-        def desiredNodes = state."desiredAssociation${groupId}"
+        def addNodes = state."addAssociation${groupId}"
+        def delNodes = state."delAssociation${groupId}"
+        state."addAssociation${groupId}" = null
+        state."delAssociation${groupId}" = null
 
-        if (desiredNodes!=null || defaultNodes) {                    
-            nodeCmds += ((desiredNodes? desiredNodes : [] + defaultNodes) - currentNodes).collect {
-                if (it != null) {
-                    return zwave.associationV2.associationSet(groupingIdentifier:groupId, nodeId:Integer.parseInt(it,16))
-                }
+        if (addNodes!=null) {                    
+            nodeCmds += (addNodes - currentNodes).collect {
+                return zwave.associationV2.associationSet(groupingIdentifier:groupId, nodeId:Integer.parseInt(it,16))
             }
-
-            nodeCmds += ((currentNodes - defaultNodes) - desiredNodes).collect {
-                if (it != null) {
-                    return zwave.associationV2.associationRemove(groupingIdentifier:groupId, nodeId:Integer.parseInt(it,16))
-                }
-            }
-
-            if (nodeCmds) {
-                nodeCmds +=  zwave.associationV2.associationGet(groupingIdentifier:groupId)
-            } else {
-                log.info "There are no association actions to complete for group ${groupId}"
-            }
-            return nodeCmds
         }
+        
+        if (delNodes!=null) {                    
+            nodeCmds += (delNodes - defaultNodes).collect {
+                return zwave.associationV2.associationRemove(groupingIdentifier:groupId, nodeId:Integer.parseInt(it,16))
+            }
+        }
+
+        nodeCmds += (defaultNodes - currentNodes).collect {
+            return zwave.associationV2.associationSet(groupingIdentifier:groupId, nodeId:Integer.parseInt(it,16))        
+        }
+        
+        if (nodeCmds) {
+            nodeCmds +=  zwave.associationV2.associationGet(groupingIdentifier:groupId)
+        } else {
+            log.info "There are no association actions to complete for group ${groupId}"
+        }
+        return nodeCmds
     } else {
         log.warn "Nodes not found for group ${groupId}"
         return [zwave.associationV2.associationGet(groupingIdentifier:groupId)]
